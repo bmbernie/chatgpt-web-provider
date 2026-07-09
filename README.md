@@ -92,7 +92,7 @@ curl -s \
   -H "X-API-Key: $CHATGPT_WEB_API_KEY" \
   -H 'Content-Type: application/json' \
   http://127.0.0.1:8791/v1/chat/completions \
-  -d '{"model":"chatgpt-5.5-high-web","messages":[{"role":"user","content":"Say pong"}]}'
+  -d '{"model":"chatgpt-5.6-sol-high-web","messages":[{"role":"user","content":"Say pong"}]}'
 
 curl -s \
   -H "X-API-Key: $CHATGPT_WEB_API_KEY" \
@@ -115,7 +115,7 @@ curl --location 'https://codex.guber.dev/v1/chat/completions' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   --data '{
-    "model": "chatgpt-5.5-high-web",
+    "model": "chatgpt-5.6-sol-high-web",
     "level": "high",
     "messages": [
       {"role": "system", "content": "Reply concisely."},
@@ -132,7 +132,7 @@ Response shape:
   "id": "chatcmpl-...",
   "object": "chat.completion",
   "created": 1782610607,
-  "model": "chatgpt-5.5-high-web",
+  "model": "chatgpt-5.6-sol-high-web",
   "choices": [
     {
       "index": 0,
@@ -164,7 +164,7 @@ curl --no-buffer --location 'https://codex.guber.dev/v1/chat/completions' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   --data '{
-    "model": "chatgpt-5.5-high-web",
+    "model": "chatgpt-5.6-sol-high-web",
     "messages": [{"role": "user", "content": "Say pong"}],
     "stream": true
   }'
@@ -200,7 +200,7 @@ curl --location 'https://codex.guber.dev/v1/responses' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   --data '{
-    "model": "chatgpt-5.5-high-web",
+    "model": "chatgpt-5.6-sol-high-web",
     "input": "Say exactly: pong",
     "stream": false
   }'
@@ -213,7 +213,7 @@ Response includes `output_text`:
   "id": "resp_...",
   "object": "response",
   "status": "completed",
-  "model": "chatgpt-5.5-high-web",
+  "model": "chatgpt-5.6-sol-high-web",
   "output_text": "pong"
 }
 ```
@@ -235,15 +235,17 @@ Example response shape:
 ```json
 {
   "backend": "browser",
-  "default_model": "chatgpt-5.5-high-web",
+  "default_model": "chatgpt-5.6-sol-high-web",
   "models": [
-    {"id": "chatgpt-5.5-high-web", "display_name": "GPT-5.5 High", "default": true},
+    {"id": "chatgpt-5.6-sol-high-web", "display_name": "GPT-5.6 Sol", "default": true},
+    {"id": "gpt-5.6-terra", "display_name": "5.6 Terra", "default": false},
+    {"id": "gpt-5.6-luna", "display_name": "5.6 Luna", "default": false},
     {"id": "gpt-5.5", "display_name": "GPT-5.5", "default": false},
-    {"id": "gpt-5", "display_name": "GPT-5", "default": false},
-    {"id": "gpt-4o", "display_name": "GPT-4o", "default": false},
-    {"id": "o3", "display_name": "o3", "default": false},
-    {"id": "o4-mini", "display_name": "o4-mini", "default": false},
-    {"id": "auto", "display_name": "Auto", "default": false}
+    {"id": "gpt-5.4", "display_name": "GPT-5.4", "default": false},
+    {"id": "gpt-5.4-mini", "display_name": "5.4 Mini", "default": false},
+    {"id": "gpt-5.3", "display_name": "GPT-5.3", "default": false},
+    {"id": "gpt-5.3-codex-spark", "display_name": "5.3 Codex Spark", "default": false},
+    {"id": "o3", "display_name": "o3", "default": false}
   ],
   "levels": [
     {"id": "auto", "display_name": "Auto", "default": true},
@@ -274,7 +276,7 @@ To force a fresh ChatGPT conversation before the prompt, use either request body
 
 ```json
 {
-  "model": "chatgpt-5.5-high-web",
+  "model": "chatgpt-5.6-sol-high-web",
   "messages": [{"role": "user", "content": "Start fresh"}],
   "new_session": true
 }
@@ -294,7 +296,7 @@ curl --location 'https://codex.guber.dev/v1/chat/completions' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   --data '{
-    "model": "chatgpt-5.5-high-web",
+    "model": "chatgpt-5.6-sol-high-web",
     "messages": [{"role":"user","content":"Say exactly: fresh-session-pong"}],
     "stream": false,
     "new_session": true
@@ -310,7 +312,7 @@ curl --location 'https://codex.guber.dev/v1/chat/completions' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   --header 'X-New-Session: true' \
   --data '{
-    "model": "chatgpt-5.5-high-web",
+    "model": "chatgpt-5.6-sol-high-web",
     "messages": [{"role":"user","content":"Say exactly: fresh-session-pong"}],
     "stream": false
   }'
@@ -381,7 +383,7 @@ Cloudflare but headed mode reached normal ChatGPT and produced real responses.
 {
   "ok": true,
   "backend": "browser",
-  "model": "chatgpt-5.5-high-web",
+  "model": "chatgpt-5.6-sol-high-web",
   "title": "ChatGPT",
   "logged_in_hint": true
 }
@@ -406,7 +408,7 @@ Example shape:
 ```json
 {
   "backend": "browser",
-  "model": "chatgpt-5.5-high-web",
+  "model": "chatgpt-5.6-sol-high-web",
   "health": {"ok": true, "backend": "browser", "title": "ChatGPT"},
   "queue": {
     "max_concurrent_requests": 1,
@@ -462,7 +464,7 @@ default `urllib` user agent while allowing Postman/curl-style user agents.
 ```bash
 CHATGPT_WEB_API_KEYS=replace-with-a-long-random-token
 CHATGPT_WEB_BACKEND=mock
-CHATGPT_WEB_MODEL=chatgpt-5.5-high-web
+CHATGPT_WEB_MODEL=chatgpt-5.6-sol-high-web
 CHATGPT_WEB_HOST=127.0.0.1
 CHATGPT_WEB_PORT=8791
 CHATGPT_WEB_PUBLIC_BASE_URL=https://codex.example.com

@@ -33,13 +33,13 @@ def test_models_returns_openai_compatible_shape(client):
     assert r.status_code == 200
     data = r.json()
     assert data["object"] == "list"
-    assert data["data"][0]["id"] == "chatgpt-5.5-high-web"
+    assert data["data"][0]["id"] == "chatgpt-5.6-sol-high-web"
 
 
 def test_models_accepts_x_api_key_header(client):
     r = client.get("/v1/models", headers={"X-API-Key": "test-token"})
     assert r.status_code == 200
-    assert r.json()["data"][0]["id"] == "chatgpt-5.5-high-web"
+    assert r.json()["data"][0]["id"] == "chatgpt-5.6-sol-high-web"
 
 
 def test_auth_uses_valid_bearer_when_x_api_key_placeholder_is_unresolved(client):
@@ -48,7 +48,7 @@ def test_auth_uses_valid_bearer_when_x_api_key_placeholder_is_unresolved(client)
         headers={"X-API-Key": "{{api_key}}", "Authorization": "Bearer test-token"},
     )
     assert r.status_code == 200
-    assert r.json()["data"][0]["id"] == "chatgpt-5.5-high-web"
+    assert r.json()["data"][0]["id"] == "chatgpt-5.6-sol-high-web"
 
 
 def test_provider_status_requires_auth_and_reports_queue(client):
@@ -57,13 +57,13 @@ def test_provider_status_requires_auth_and_reports_queue(client):
     assert r.status_code == 200
     data = r.json()
     assert data["backend"] == "mock"
-    assert data["model"] == "chatgpt-5.5-high-web"
+    assert data["model"] == "chatgpt-5.6-sol-high-web"
     assert data["queue"]["max_concurrent_requests"] == 1
 
 
 def test_chat_completions_non_stream(client):
     payload = {
-        "model": "chatgpt-5.5-high-web",
+        "model": "chatgpt-5.6-sol-high-web",
         "messages": [
             {"role": "system", "content": "Be concise."},
             {"role": "user", "content": "Say pong"},
@@ -73,7 +73,7 @@ def test_chat_completions_non_stream(client):
     assert r.status_code == 200
     data = r.json()
     assert data["object"] == "chat.completion"
-    assert data["model"] == "chatgpt-5.5-high-web"
+    assert data["model"] == "chatgpt-5.6-sol-high-web"
     assert data["choices"][0]["message"]["role"] == "assistant"
     assert "Say pong" in data["choices"][0]["message"]["content"]
     assert data["choices"][0]["finish_reason"] == "stop"
@@ -82,13 +82,13 @@ def test_chat_completions_non_stream(client):
 def test_responses_endpoint_returns_openai_responses_like_shape(client):
     r = client.post(
         "/v1/responses",
-        json={"model": "chatgpt-5.5-high-web", "input": "hello"},
+        json={"model": "chatgpt-5.6-sol-high-web", "input": "hello"},
         headers={"Authorization": "Bearer test-token"},
     )
     assert r.status_code == 200
     data = r.json()
     assert data["object"] == "response"
-    assert data["model"] == "chatgpt-5.5-high-web"
+    assert data["model"] == "chatgpt-5.6-sol-high-web"
     assert data["output"][0]["content"][0]["type"] == "output_text"
     assert "hello" in data["output_text"]
 
@@ -96,14 +96,14 @@ def test_responses_endpoint_returns_openai_responses_like_shape(client):
 def test_chat_completions_stream_returns_openai_sse_chunks(client):
     r = client.post(
         "/v1/chat/completions",
-        json={"model": "chatgpt-5.5-high-web", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+        json={"model": "chatgpt-5.6-sol-high-web", "messages": [{"role": "user", "content": "hi"}], "stream": True},
         headers={"Authorization": "Bearer test-token"},
     )
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/event-stream")
     body = r.text
     assert "chat.completion.chunk" in body
-    assert "[mock:chatgpt-5.5-high-web] hi" in body
+    assert "[mock:chatgpt-5.6-sol-high-web] hi" in body
     assert "data: [DONE]" in body
 
 
@@ -128,7 +128,7 @@ def test_requests_are_queued_by_default():
         app = create_app(settings, backend=backend)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            payload = {"model": "chatgpt-5.5-high-web", "messages": [{"role": "user", "content": "hi"}]}
+            payload = {"model": "chatgpt-5.6-sol-high-web", "messages": [{"role": "user", "content": "hi"}]}
             responses = await asyncio.gather(
                 ac.post("/v1/chat/completions", json=payload, headers={"Authorization": "Bearer test-token"}),
                 ac.post("/v1/chat/completions", json=payload, headers={"Authorization": "Bearer test-token"}),
@@ -154,7 +154,7 @@ def test_chat_completions_can_request_new_session_via_body_or_header():
     backend = SessionRecordingBackend(settings)
     app = create_app(settings, backend=backend)
     client = TestClient(app)
-    payload = {"model": "chatgpt-5.5-high-web", "messages": [{"role": "user", "content": "hi"}]}
+    payload = {"model": "chatgpt-5.6-sol-high-web", "messages": [{"role": "user", "content": "hi"}]}
 
     assert client.post("/v1/chat/completions", json={**payload, "new_session": True}, headers={"Authorization": "Bearer test-token"}).status_code == 200
     assert client.post("/v1/chat/completions", json=payload, headers={"Authorization": "Bearer test-token", "X-New-Session": "true"}).status_code == 200
@@ -168,8 +168,8 @@ def test_responses_can_request_new_session_via_body_or_header():
     app = create_app(settings, backend=backend)
     client = TestClient(app)
 
-    assert client.post("/v1/responses", json={"model": "chatgpt-5.5-high-web", "input": "hi", "new_session": True}, headers={"Authorization": "Bearer test-token"}).status_code == 200
-    assert client.post("/v1/responses", json={"model": "chatgpt-5.5-high-web", "input": "hi"}, headers={"Authorization": "Bearer test-token", "X-New-Session": "1"}).status_code == 200
+    assert client.post("/v1/responses", json={"model": "chatgpt-5.6-sol-high-web", "input": "hi", "new_session": True}, headers={"Authorization": "Bearer test-token"}).status_code == 200
+    assert client.post("/v1/responses", json={"model": "chatgpt-5.6-sol-high-web", "input": "hi"}, headers={"Authorization": "Bearer test-token", "X-New-Session": "1"}).status_code == 200
 
     assert backend.new_session_values == [True, True]
 
