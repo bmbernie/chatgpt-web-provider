@@ -5,6 +5,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+DEFAULT_MODEL = "chatgpt-5.6-sol-high-web"
+DEFAULT_MODELS = (
+    "chatgpt-5.6-sol-high-web",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3",
+    "gpt-5.3-codex-spark",
+    "o3",
+)
+DEFAULT_MODEL_LABELS = {
+    "chatgpt-5.6-sol-high-web": "GPT-5.6 Sol",
+    "gpt-5.6-terra": "5.6 Terra",
+    "gpt-5.6-luna": "5.6 Luna",
+    "gpt-5.5": "GPT-5.5",
+    "gpt-5.4": "GPT-5.4",
+    "gpt-5.4-mini": "5.4 Mini",
+    "gpt-5.3": "GPT-5.3",
+    "gpt-5.3-codex-spark": "5.3 Codex Spark",
+    "o3": "o3",
+}
+
+
 def _csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -27,9 +52,9 @@ def _kv_csv(value: str | None) -> dict[str, str]:
 class Settings:
     api_keys: list[str] = field(default_factory=list)
     backend: str = "mock"
-    model_id: str = "chatgpt-5.5-high-web"
-    available_models: list[str] = field(default_factory=list)
-    model_labels: dict[str, str] = field(default_factory=dict)
+    model_id: str = DEFAULT_MODEL
+    available_models: list[str] = field(default_factory=lambda: list(DEFAULT_MODELS))
+    model_labels: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODEL_LABELS))
     available_levels: list[str] = field(default_factory=list)
     level_labels: dict[str, str] = field(default_factory=dict)
     host: str = "127.0.0.1"
@@ -51,8 +76,8 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        model_id = os.getenv("CHATGPT_WEB_MODEL", "chatgpt-5.5-high-web")
-        available_models = _csv(os.getenv("CHATGPT_WEB_MODELS")) or [model_id]
+        model_id = os.getenv("CHATGPT_WEB_MODEL", DEFAULT_MODEL)
+        available_models = _csv(os.getenv("CHATGPT_WEB_MODELS")) or list(DEFAULT_MODELS)
         if model_id not in available_models:
             available_models.insert(0, model_id)
         available_levels = _csv(os.getenv("CHATGPT_WEB_LEVELS")) or ["auto", "fast", "standard", "high"]
@@ -61,7 +86,7 @@ class Settings:
             backend=os.getenv("CHATGPT_WEB_BACKEND", "mock").strip().lower() or "mock",
             model_id=model_id,
             available_models=available_models,
-            model_labels=_kv_csv(os.getenv("CHATGPT_WEB_MODEL_LABELS")),
+            model_labels=_kv_csv(os.getenv("CHATGPT_WEB_MODEL_LABELS")) or dict(DEFAULT_MODEL_LABELS),
             available_levels=available_levels,
             level_labels=_kv_csv(os.getenv("CHATGPT_WEB_LEVEL_LABELS")),
             host=os.getenv("CHATGPT_WEB_HOST", "127.0.0.1"),
