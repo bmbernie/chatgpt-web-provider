@@ -23,6 +23,12 @@ def test_health_is_public(client):
     assert r.json()["backend"] == "mock"
 
 
+def test_root_redirects_to_docs(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 308
+    assert r.headers["location"] == "/docs"
+
+
 def test_models_requires_bearer_token(client):
     assert client.get("/v1/models").status_code == 401
     assert client.get("/v1/models", headers={"Authorization": "Bearer wrong"}).status_code == 403
