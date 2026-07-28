@@ -8,7 +8,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import Backend, build_backend
 from .config import Settings
@@ -103,6 +103,10 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception):
         return JSONResponse(status_code=500, content={"error": {"message": redact_secret(str(exc)), "type": exc.__class__.__name__}})
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return RedirectResponse("/docs", status_code=308)
 
     @app.get("/health")
     async def health():
