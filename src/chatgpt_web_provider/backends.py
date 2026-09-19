@@ -55,7 +55,9 @@ class BrowserBackend(Backend):
         self._context = await self._playwright.chromium.launch_persistent_context(
             self.settings.profile_dir,
             headless=self.settings.headless,
-            viewport={"width": 1400, "height": 1000},
+            channel=self.settings.browser_channel,
+            ignore_default_args=["--disable-extensions"] if self.settings.enable_extensions else None,
+            viewport={"width": 1360, "height": 820},
             args=["--disable-blink-features=AutomationControlled"],
         )
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()

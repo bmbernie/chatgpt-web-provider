@@ -17,7 +17,9 @@ def main() -> None:
         ctx = p.chromium.launch_persistent_context(
             settings.profile_dir,
             headless=False,
-            viewport={"width": 1400, "height": 1000},
+            channel=settings.browser_channel,
+            ignore_default_args=["--disable-extensions"] if settings.enable_extensions else None,
+            viewport={"width": 1360, "height": 820},
             args=["--disable-blink-features=AutomationControlled"],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()

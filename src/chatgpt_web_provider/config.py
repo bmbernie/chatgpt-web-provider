@@ -62,6 +62,8 @@ class Settings:
     public_base_url: str = "http://127.0.0.1:8791"
     profile_dir: str = str(Path.home() / ".local/share/chatgpt-web-provider/chrome-profile")
     headless: bool = True
+    browser_channel: str | None = None
+    enable_extensions: bool = False
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -94,6 +96,8 @@ class Settings:
             public_base_url=os.getenv("CHATGPT_WEB_PUBLIC_BASE_URL", "http://127.0.0.1:8791"),
             profile_dir=os.getenv("CHATGPT_WEB_PROFILE_DIR", str(Path.home() / ".local/share/chatgpt-web-provider/chrome-profile")),
             headless=os.getenv("CHATGPT_WEB_HEADLESS", "true").lower() in {"1", "true", "yes", "on"},
+            browser_channel=(os.getenv("CHATGPT_WEB_BROWSER_CHANNEL", "").strip() or None),
+            enable_extensions=os.getenv("CHATGPT_WEB_ENABLE_EXTENSIONS", "false").lower() in {"1", "true", "yes", "on"},
             request_timeout_seconds=int(os.getenv("CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS", "300")),
             max_concurrent_requests=int(os.getenv("CHATGPT_WEB_MAX_CONCURRENT_REQUESTS", "1")),
             queue_timeout_seconds=int(os.getenv("CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS", "600")),
