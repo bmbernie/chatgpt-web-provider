@@ -216,44 +216,83 @@ class BrowserBackend(Backend):
 
     @staticmethod
     async def _try_select_label(page, label: str) -> bool:  # pragma: no cover - browser integration
+        """Select an exact model/reasoning option from the ChatGPT UI.
+
+        Exact matching is required so labels such as "High" cannot match
+        "Extra High". Opening a menu is not considered success; an exact
+        option must actually be clicked.
+        """
         if not label:
             return False
-        candidates = (
-            f"button:has-text('{label}')",
-            f"[role='button']:has-text('{label}')",
-            f"[role='menuitem']:has-text('{label}')",
-            f"text={label}",
+
+        exact_options = (
+            f"[role='menuitem']:text-is('{label}')",
+            f"[role='menuitemradio']:text-is('{label}')",
+            f"[role='option']:text-is('{label}')",
+            f"[data-radix-collection-item]:text-is('{label}')",
         )
-        # First try a direct visible option (already expanded menu or direct button).
-        for selector in candidates:
-            try:
-                loc = page.locator(selector).first
-                if await loc.count() > 0 and await loc.is_visible(timeout=1000):
-                    await loc.click(timeout=3000)
-                    await page.wait_for_timeout(500)
-                    return True
-            except Exception:
-                continue
-        # Then try common model/menu buttons and search again.
-        for opener in (
+
+        async def click_exact_option() -> bool:
+            for selector in exact_options:
+                try:
+                    options = page.locator(selector)
+                    count = await options.count()
+
+                    for index in range(count):
+                        option = options.nth(index)
+                        if await option.is_visible(timeout=500):
+                            await option.click(timeout=3000)
+                            await page.wait_for_timeout(500)
+                            return True
+                except Exception:
+                    continue
+
+            return False
+
+        # Handle the case where a menu is already open.
+        if await click_exact_option():
+            return True
+
+        opener_selectors = (
             "[data-testid='model-switcher-dropdown-button']",
             "button[aria-haspopup='menu']",
             "button:has-text('ChatGPT')",
             "button:has-text('GPT')",
-        ):
+        )
+
+        # Walk every candidate opener. Using only `.first` can repeatedly
+        # open the model menu while never reaching the reasoning menu.
+        for opener_selector in opener_selectors:
             try:
-                button = page.locator(opener).first
-                if await button.count() > 0 and await button.is_visible(timeout=1000):
-                    await button.click(timeout=3000)
-                    await page.wait_for_timeout(700)
-                    for selector in candidates:
-                        loc = page.locator(selector).first
-                        if await loc.count() > 0 and await loc.is_visible(timeout=1000):
-                            await loc.click(timeout=3000)
-                            await page.wait_for_timeout(500)
-                            return True
+                openers = page.locator(opener_selector)
+                opener_count = min(await openers.count(), 12)
             except Exception:
                 continue
+
+            for index in range(opener_count):
+                try:
+                    opener = openers.nth(index)
+
+                    if not await opener.is_visible(timeout=500):
+                        continue
+
+                    await opener.click(timeout=3000)
+                    await page.wait_for_timeout(500)
+
+                    if await click_exact_option():
+                        return True
+
+                    # Do not leave the wrong menu open while trying another.
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(200)
+
+                except Exception:
+                    try:
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    continue
+
         return False
 
     @staticmethod
@@ -262,32 +301,88 @@ class BrowserBackend(Backend):
 
     @staticmethod
     async def _submit_prompt(page, composer) -> None:  # pragma: no cover - browser integration
-        """Submit the populated ChatGPT composer.
+        """Wait for the ChatGPT Send button, click it, and verify submission.
 
-        Prefer the explicit Send button. Fall back to an Enter keypress
-        targeted at the composer itself.
+        Large fills can leave the composer populated before ChatGPT has made
+        Send actionable. Waiting here prevents a race where an Enter keypress
+        is ignored and the request appears to hang.
         """
-        for selector in (
+        selectors = (
             "button[data-testid='send-button']",
             "button[aria-label='Send prompt']",
             "button[aria-label='Send message']",
             "button[aria-label='Send']",
-        ):
+        )
+
+        deadline = time.monotonic() + 30.0
+        send_button = None
+
+        while time.monotonic() < deadline:
+            for selector in selectors:
+                try:
+                    buttons = page.locator(selector)
+                    count = min(await buttons.count(), 4)
+
+                    for index in range(count):
+                        button = buttons.nth(index)
+
+                        if not await button.is_visible(timeout=250):
+                            continue
+
+                        if await button.is_enabled(timeout=250):
+                            send_button = button
+                            break
+
+                    if send_button is not None:
+                        break
+
+                except Exception:
+                    continue
+
+            if send_button is not None:
+                break
+
+            await page.wait_for_timeout(250)
+
+        if send_button is None:
+            raise RuntimeError(
+                "ChatGPT Send button did not become enabled within 30 seconds"
+            )
+
+        await send_button.click(timeout=3000)
+
+        # Confirm that the click actually submitted the prompt.
+        stop = page.locator(
+            "button[aria-label*='Stop'], button[data-testid*='stop']"
+        )
+
+        confirm_deadline = time.monotonic() + 5.0
+
+        while time.monotonic() < confirm_deadline:
             try:
-                button = page.locator(selector).first
-                if (
-                    await button.count() > 0
-                    and await button.is_visible(timeout=1000)
-                    and await button.is_enabled(timeout=1000)
-                ):
-                    await button.click(timeout=3000)
+                stop_count = await stop.count()
+                for index in range(stop_count):
+                    if await stop.nth(index).is_visible(timeout=200):
+                        return
+            except Exception:
+                pass
+
+            try:
+                remaining = (
+                    await composer.inner_text(timeout=500)
+                ).strip()
+
+                if not remaining:
                     return
             except Exception:
-                continue
+                # Composer replacement/removal also indicates submission.
+                return
 
-        # Fallback: ensure Enter is delivered to the composer, rather than
-        # whichever element currently owns global keyboard focus.
-        await composer.press("Enter")
+            await page.wait_for_timeout(200)
+
+        raise RuntimeError(
+            "ChatGPT Send button was clicked but submission was not confirmed"
+        )
 
     @staticmethod
     async def _wait_until_idle(page) -> None:  # pragma: no cover - browser integration
