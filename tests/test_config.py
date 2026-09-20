@@ -7,9 +7,9 @@ def test_default_model_catalog_is_current(monkeypatch):
 
     settings = Settings.from_env()
 
-    assert settings.model_id == "chatgpt-5.6-sol-high-web"
+    assert settings.model_id == "chatgpt-5.6-sol-web"
     assert settings.available_models == [
-        "chatgpt-5.6-sol-high-web",
+        "chatgpt-5.6-sol-web",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-5.5",

@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-DEFAULT_MODEL = "chatgpt-5.6-sol-high-web"
+DEFAULT_MODEL = "chatgpt-5.6-sol-web"
 DEFAULT_MODELS = (
-    "chatgpt-5.6-sol-high-web",
+    "chatgpt-5.6-sol-web",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
@@ -18,7 +18,7 @@ DEFAULT_MODELS = (
     "o3",
 )
 DEFAULT_MODEL_LABELS = {
-    "chatgpt-5.6-sol-high-web": "GPT-5.6 Sol",
+    "chatgpt-5.6-sol-web": "GPT-5.6 Sol",
     "gpt-5.6-terra": "5.6 Terra",
     "gpt-5.6-luna": "5.6 Luna",
     "gpt-5.5": "GPT-5.5",
