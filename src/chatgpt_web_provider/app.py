@@ -8,12 +8,18 @@ import uuid
 from typing import Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import Backend, build_backend
 from .config import Settings
-from .models import ChatCompletionRequest, ChatMessage, ResponsesRequest
+from .models import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ResponsesRequest,
+    SessionCompletionRequest,
+    SessionCreateRequest,
+)
 from .security import redact_secret
 
 
@@ -211,6 +217,125 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 "queue_timeout_seconds": settings.queue_timeout_seconds,
                 "in_flight_estimate": waiters,
             },
+        }
+
+    async def _session_backend_call(operation):
+        try:
+            return await operation
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=501,
+                detail=str(exc),
+            ) from exc
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="session not found",
+            ) from exc
+
+    @app.post("/v1/sessions", status_code=201)
+    async def create_session(
+        req: SessionCreateRequest,
+        _token: str = Depends(auth),
+    ):
+        _validate_requested_options(
+            settings,
+            req.model,
+            req.reasoning_effort,
+        )
+
+        try:
+            return await backend.create_session(
+                req.session_id,
+                req.model,
+                req.reasoning_effort,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=str(exc),
+            ) from exc
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=501,
+                detail=str(exc),
+            ) from exc
+
+    @app.get("/v1/sessions")
+    async def list_sessions(
+        _token: str = Depends(auth),
+    ):
+        sessions = await _session_backend_call(
+            backend.list_sessions()
+        )
+        return {
+            "object": "list",
+            "data": sessions,
+        }
+
+    @app.get("/v1/sessions/{session_id}")
+    async def get_session(
+        session_id: str,
+        _token: str = Depends(auth),
+    ):
+        return await _session_backend_call(
+            backend.get_session(session_id)
+        )
+
+    @app.delete(
+        "/v1/sessions/{session_id}",
+        status_code=204,
+    )
+    async def delete_session(
+        session_id: str,
+        _token: str = Depends(auth),
+    ):
+        await _session_backend_call(
+            backend.delete_session(session_id)
+        )
+        return Response(status_code=204)
+
+    @app.post("/v1/sessions/{session_id}/completions")
+    async def session_completion(
+        session_id: str,
+        req: SessionCompletionRequest,
+        _token: str = Depends(auth),
+    ):
+        result = await _session_backend_call(
+            backend.complete_session(
+                session_id,
+                req.messages,
+            )
+        )
+
+        response_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+        usage = {
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "total_tokens": (
+                result.prompt_tokens
+                + result.completion_tokens
+            ),
+        }
+
+        return {
+            "id": response_id,
+            "object": "chat.completion",
+            "session_id": session_id,
+            "model": result.model,
+            "level": result.level,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": result.text,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": usage,
         }
 
     @app.post("/v1/chat/completions")

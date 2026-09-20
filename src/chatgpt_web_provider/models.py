@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatMessage(BaseModel):
@@ -41,6 +41,24 @@ class CompletionResult(BaseModel):
     level: str | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
+
+
+class SessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    )
+    model: str
+    reasoning_effort: str
+
+
+class SessionCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[ChatMessage]
 
 
 class ErrorBody(BaseModel):

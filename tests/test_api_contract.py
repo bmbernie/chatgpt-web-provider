@@ -243,3 +243,129 @@ def test_responses_passes_requested_model_and_level():
     data = r.json()
     assert data["model"] == "gpt-b"
     assert data["level"] == "high"
+
+
+# --- provider session API contract ---
+
+def test_session_api_lifecycle_and_pinned_configuration():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a", "gpt-b"],
+        available_levels=["high", "xhigh"],
+    )
+    client = TestClient(create_app(settings))
+    headers = {"Authorization": "Bearer test-token"}
+
+    created = client.post(
+        "/v1/sessions",
+        json={
+            "session_id": "re-high",
+            "model": "gpt-a",
+            "reasoning_effort": "high",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json() == {
+        "session_id": "re-high",
+        "model": "gpt-a",
+        "level": "high",
+        "state": "ready",
+    }
+
+    fetched = client.get("/v1/sessions/re-high", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["session_id"] == "re-high"
+    assert fetched.json()["model"] == "gpt-a"
+    assert fetched.json()["level"] == "high"
+
+    listed = client.get("/v1/sessions", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["object"] == "list"
+    assert [s["session_id"] for s in listed.json()["data"]] == ["re-high"]
+
+    completed = client.post(
+        "/v1/sessions/re-high/completions",
+        json={"messages": [{"role": "user", "content": "Say pong"}]},
+        headers=headers,
+    )
+    assert completed.status_code == 200
+    body = completed.json()
+    assert body["session_id"] == "re-high"
+    assert body["model"] == "gpt-a"
+    assert body["level"] == "high"
+    assert "Say pong" in body["choices"][0]["message"]["content"]
+
+    deleted = client.delete("/v1/sessions/re-high", headers=headers)
+    assert deleted.status_code == 204
+
+    assert client.get("/v1/sessions/re-high", headers=headers).status_code == 404
+
+
+def test_session_api_rejects_duplicate_and_invalid_configuration():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high", "xhigh"],
+    )
+    client = TestClient(create_app(settings))
+    headers = {"Authorization": "Bearer test-token"}
+
+    payload = {
+        "session_id": "review-xhigh",
+        "model": "gpt-a",
+        "reasoning_effort": "xhigh",
+    }
+
+    assert client.post("/v1/sessions", json=payload, headers=headers).status_code == 201
+    assert client.post("/v1/sessions", json=payload, headers=headers).status_code == 409
+
+    bad_level = client.post(
+        "/v1/sessions",
+        json={
+            "session_id": "bad",
+            "model": "gpt-a",
+            "reasoning_effort": "ultra",
+        },
+        headers=headers,
+    )
+    assert bad_level.status_code == 400
+    assert bad_level.json()["detail"]["error"] == "unsupported_level"
+
+
+def test_session_completion_cannot_override_pinned_model_or_reasoning():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a", "gpt-b"],
+        available_levels=["high", "xhigh"],
+    )
+    client = TestClient(create_app(settings))
+    headers = {"Authorization": "Bearer test-token"}
+
+    assert client.post(
+        "/v1/sessions",
+        json={
+            "session_id": "crypto-high",
+            "model": "gpt-a",
+            "reasoning_effort": "high",
+        },
+        headers=headers,
+    ).status_code == 201
+
+    attempt = client.post(
+        "/v1/sessions/crypto-high/completions",
+        json={
+            "model": "gpt-b",
+            "reasoning_effort": "xhigh",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers=headers,
+    )
+
+    assert attempt.status_code == 422

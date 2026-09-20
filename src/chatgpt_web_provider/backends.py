@@ -25,7 +25,85 @@ class Backend(ABC):
         return {"ok": True, "backend": self.settings.backend}
 
 
+    async def create_session(
+        self,
+        session_id: str,
+        model: str,
+        level: str,
+    ) -> dict:
+        raise NotImplementedError("backend does not support provider sessions")
+
+    async def list_sessions(self) -> list[dict]:
+        raise NotImplementedError("backend does not support provider sessions")
+
+    async def get_session(self, session_id: str) -> dict:
+        raise NotImplementedError("backend does not support provider sessions")
+
+    async def delete_session(self, session_id: str) -> None:
+        raise NotImplementedError("backend does not support provider sessions")
+
+    async def complete_session(
+        self,
+        session_id: str,
+        messages: list[ChatMessage],
+    ) -> CompletionResult:
+        raise NotImplementedError("backend does not support provider sessions")
+
+
 class MockBackend(Backend):
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        self._sessions: dict[str, dict] = {}
+
+    async def create_session(
+        self,
+        session_id: str,
+        model: str,
+        level: str,
+    ) -> dict:
+        if session_id in self._sessions:
+            raise ValueError("session already exists")
+
+        record = {
+            "session_id": session_id,
+            "model": model,
+            "level": level,
+            "state": "ready",
+        }
+        self._sessions[session_id] = record
+        return dict(record)
+
+    async def list_sessions(self) -> list[dict]:
+        return [
+            dict(self._sessions[key])
+            for key in sorted(self._sessions)
+        ]
+
+    async def get_session(self, session_id: str) -> dict:
+        try:
+            return dict(self._sessions[session_id])
+        except KeyError:
+            raise KeyError(session_id) from None
+
+    async def delete_session(self, session_id: str) -> None:
+        if session_id not in self._sessions:
+            raise KeyError(session_id)
+        del self._sessions[session_id]
+
+    async def complete_session(
+        self,
+        session_id: str,
+        messages: list[ChatMessage],
+    ) -> CompletionResult:
+        session = await self.get_session(session_id)
+
+        return await self.complete(
+            messages,
+            model=session["model"],
+            level=session["level"],
+            new_session=False,
+        )
+
     async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
         last_user = next((m.text() for m in reversed(messages) if m.role == "user"), "")
         text = f"[mock:{self.settings.model_id}] {last_user}"
