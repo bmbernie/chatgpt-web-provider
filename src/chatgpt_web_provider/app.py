@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import Backend, build_backend
-from .config import Settings
+from .config import SESSION_POLICIES, Settings
 from .models import (
     ChatCompletionRequest,
     ChatMessage,
@@ -49,6 +49,20 @@ def _truthy_header(value: str | None) -> bool:
 
 def _request_level(req) -> str | None:
     return getattr(req, "level", None) or getattr(req, "reasoning_effort", None)
+
+
+def _validate_conversation_policy(
+    policy: str,
+) -> None:
+    if policy not in SESSION_POLICIES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_conversation_policy",
+                "conversation_policy": policy,
+                "available_policies": list(SESSION_POLICIES),
+            },
+        )
 
 
 def _validate_requested_options(settings: Settings, model: str, level: str | None) -> None:
@@ -238,10 +252,18 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         req: SessionCreateRequest,
         _token: str = Depends(auth),
     ):
+        selected_policy = (
+            req.conversation_policy
+            or settings.session_policy
+        )
+
         _validate_requested_options(
             settings,
             req.model,
             req.reasoning_effort,
+        )
+        _validate_conversation_policy(
+            selected_policy
         )
 
         try:
@@ -249,6 +271,7 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 req.session_id,
                 req.model,
                 req.reasoning_effort,
+                selected_policy,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -349,6 +372,10 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             default=None,
             alias="X-ChatGPT-Session",
         ),
+        x_chatgpt_conversation_policy: Optional[str] = Header(
+            default=None,
+            alias="X-ChatGPT-Conversation-Policy",
+        ),
         _token: str = Depends(auth),
     ):
         started = int(time.time())
@@ -371,6 +398,17 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             if x_chatgpt_session
             else ""
         )
+
+        requested_policy = (
+            x_chatgpt_conversation_policy.strip().lower()
+            if x_chatgpt_conversation_policy
+            else None
+        )
+
+        if requested_policy is not None:
+            _validate_conversation_policy(
+                requested_policy
+            )
 
         if affinity_session_id:
             valid_session_id = (
@@ -413,14 +451,22 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 ) from exc
 
             effective_level = selected_level
+            effective_policy = requested_policy
 
             if existing is not None:
                 if effective_level is None:
                     effective_level = existing["level"]
 
+                if effective_policy is None:
+                    effective_policy = existing[
+                        "conversation_policy"
+                    ]
+
                 if (
                     existing["model"] != selected_model
                     or existing["level"] != effective_level
+                    or existing["conversation_policy"]
+                    != effective_policy
                 ):
                     raise HTTPException(
                         status_code=409,
@@ -433,10 +479,14 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                                 existing["model"],
                             "existing_level":
                                 existing["level"],
+                            "existing_conversation_policy":
+                                existing["conversation_policy"],
                             "requested_model":
                                 selected_model,
                             "requested_level":
                                 effective_level,
+                            "requested_conversation_policy":
+                                effective_policy,
                         },
                     )
 
@@ -458,25 +508,34 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                         },
                     )
 
+                if effective_policy is None:
+                    effective_policy = settings.session_policy
+
+                _validate_conversation_policy(
+                    effective_policy
+                )
+
                 try:
                     await backend.create_session(
                         affinity_session_id,
                         selected_model,
                         effective_level,
+                        effective_policy,
                     )
 
                 except ValueError:
                     # Another request may have won a concurrent
-                    # first-use race. Adopt it only if configuration
-                    # is exactly compatible.
+                    # first-use race. Adopt it only when all pinned
+                    # configuration matches.
                     existing = await backend.get_session(
                         affinity_session_id
                     )
 
                     if (
                         existing["model"] != selected_model
-                        or existing["level"]
-                        != effective_level
+                        or existing["level"] != effective_level
+                        or existing["conversation_policy"]
+                        != effective_policy
                     ):
                         raise HTTPException(
                             status_code=409,
@@ -489,10 +548,16 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                                     existing["model"],
                                 "existing_level":
                                     existing["level"],
+                                "existing_conversation_policy":
+                                    existing[
+                                        "conversation_policy"
+                                    ],
                                 "requested_model":
                                     selected_model,
                                 "requested_level":
                                     effective_level,
+                                "requested_conversation_policy":
+                                    effective_policy,
                             },
                         )
 

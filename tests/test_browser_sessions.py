@@ -17,9 +17,16 @@ class FakeBrowserSessionBackend(BrowserBackend):
         self.active_by_session = {}
         self.max_active_by_session = {}
 
-    async def _create_pinned_session_page(self, model: str, level: str):
+    async def _create_pinned_session_page(
+        self,
+        model: str,
+        level: str,
+        conversation_policy: str = "regular",
+    ):
         page = object()
-        self.created.append((model, level, page))
+        self.created.append(
+            (model, level, page, conversation_policy)
+        )
         return page
 
     async def _close_pinned_session_page(self, page) -> None:
@@ -87,6 +94,7 @@ def test_browser_session_creation_pins_model_and_level():
             "session_id": "re-high",
             "model": "gpt-a",
             "level": "high",
+            "conversation_policy": "regular",
             "state": "ready",
         }
 
@@ -415,5 +423,144 @@ def test_affinity_session_submits_only_new_transcript_delta():
             ("system", "compressed context"),
             ("user", "gamma"),
         ]
+
+    asyncio.run(run())
+
+
+def test_policy_session_dispatches_conversation_modes():
+    class PolicyBackend(FakeBrowserSessionBackend):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.started = []
+            self.temporary_enabled = []
+            self.personalization = []
+
+        async def _start_new_session(self, page):
+            self.started.append(page)
+
+        async def _enable_temporary_chat(self, page):
+            self.temporary_enabled.append(page)
+
+        async def _set_temporary_personalization(
+            self,
+            page,
+            desired,
+        ):
+            self.personalization.append(
+                (page, desired)
+            )
+
+    async def run():
+        backend = PolicyBackend(settings())
+        page = object()
+
+        await backend._start_policy_session(
+            page,
+            "regular",
+        )
+
+        assert backend.started == [page]
+        assert backend.temporary_enabled == []
+        assert backend.personalization == []
+
+        await backend._start_policy_session(
+            page,
+            "temporary_personalized",
+        )
+
+        assert backend.started == [page, page]
+        assert backend.temporary_enabled == [page]
+        assert backend.personalization == [
+            (page, "Personalized"),
+        ]
+
+        await backend._start_policy_session(
+            page,
+            "temporary_unpersonalized",
+        )
+
+        assert backend.started == [
+            page,
+            page,
+            page,
+        ]
+        assert backend.temporary_enabled == [
+            page,
+            page,
+        ]
+        assert backend.personalization == [
+            (page, "Personalized"),
+            (page, "Unpersonalized"),
+        ]
+
+    asyncio.run(run())
+
+
+def test_temporary_personalization_uses_exact_menu_text():
+    class FakeLocator:
+        def __init__(self, visible=True):
+            self.visible = visible
+            self.clicks = 0
+            self.filter_kwargs = None
+
+        async def is_visible(self):
+            return self.visible
+
+        async def wait_for(self, **kwargs):
+            return None
+
+        async def click(self):
+            self.clicks += 1
+
+        def filter(self, **kwargs):
+            self.filter_kwargs = kwargs
+            return self
+
+    class FakePage:
+        def __init__(self):
+            self.desired = FakeLocator(visible=False)
+            self.other = FakeLocator()
+            self.menu = FakeLocator()
+            self.text_token = object()
+            self.get_by_text_calls = []
+
+        def locator(self, selector):
+            if selector == 'button[aria-label="Personalized"]':
+                return self.desired
+
+            if selector == 'button[aria-label="Unpersonalized"]':
+                return self.other
+
+            if selector == '[role="menuitemradio"]':
+                return self.menu
+
+            raise AssertionError(
+                f"unexpected selector: {selector}"
+            )
+
+        def get_by_text(self, text, exact=False):
+            self.get_by_text_calls.append(
+                (text, exact)
+            )
+            return self.text_token
+
+    async def run():
+        page = FakePage()
+
+        await BrowserBackend._set_temporary_personalization(
+            page,
+            "Personalized",
+        )
+
+        assert page.get_by_text_calls == [
+            ("Personalized", True),
+        ]
+
+        assert page.menu.filter_kwargs == {
+            "has": page.text_token,
+        }
+
+        assert page.other.clicks == 1
+        assert page.menu.clicks == 1
 
     asyncio.run(run())

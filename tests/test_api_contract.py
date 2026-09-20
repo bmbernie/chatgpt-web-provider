@@ -272,6 +272,7 @@ def test_session_api_lifecycle_and_pinned_configuration():
         "session_id": "re-high",
         "model": "gpt-a",
         "level": "high",
+        "conversation_policy": "regular",
         "state": "ready",
     }
 
@@ -466,3 +467,158 @@ def test_chat_completions_affinity_lazily_creates_and_pins_session():
     assert session.status_code == 200
     assert session.json()["model"] == "gpt-a"
     assert session.json()["level"] == "xhigh"
+
+
+def test_session_api_accepts_conversation_policy():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high", "xhigh"],
+    )
+
+    client = TestClient(create_app(settings))
+    headers = {
+        "Authorization": "Bearer test-token",
+    }
+
+    created = client.post(
+        "/v1/sessions",
+        json={
+            "session_id": "isolated-worker",
+            "model": "gpt-a",
+            "reasoning_effort": "high",
+            "conversation_policy":
+                "temporary_unpersonalized",
+        },
+        headers=headers,
+    )
+
+    assert created.status_code == 201
+    assert (
+        created.json()["conversation_policy"]
+        == "temporary_unpersonalized"
+    )
+
+    fetched = client.get(
+        "/v1/sessions/isolated-worker",
+        headers=headers,
+    )
+
+    assert (
+        fetched.json()["conversation_policy"]
+        == "temporary_unpersonalized"
+    )
+
+
+def test_affinity_header_can_select_conversation_policy():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high", "xhigh"],
+    )
+
+    client = TestClient(create_app(settings))
+
+    headers = {
+        "Authorization": "Bearer test-token",
+        "X-ChatGPT-Session": "affinity-isolated",
+        "X-ChatGPT-Conversation-Policy":
+            "temporary_unpersonalized",
+    }
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+
+    session = client.get(
+        "/v1/sessions/affinity-isolated",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    )
+
+    assert (
+        session.json()["conversation_policy"]
+        == "temporary_unpersonalized"
+    )
+
+
+def test_affinity_policy_is_pinned():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high", "xhigh"],
+    )
+
+    client = TestClient(create_app(settings))
+
+    first_headers = {
+        "Authorization": "Bearer test-token",
+        "X-ChatGPT-Session": "affinity-policy",
+        "X-ChatGPT-Conversation-Policy":
+            "temporary_unpersonalized",
+    }
+
+    first = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "first",
+                }
+            ],
+        },
+        headers=first_headers,
+    )
+
+    assert first.status_code == 200
+
+    conflicting_headers = {
+        "Authorization": "Bearer test-token",
+        "X-ChatGPT-Session": "affinity-policy",
+        "X-ChatGPT-Conversation-Policy":
+            "regular",
+    }
+
+    conflict = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "second",
+                }
+            ],
+        },
+        headers=conflicting_headers,
+    )
+
+    assert conflict.status_code == 409
+    assert (
+        conflict.json()["detail"]["error"]
+        == "session_configuration_conflict"
+    )

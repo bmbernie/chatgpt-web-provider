@@ -20,6 +20,7 @@ class _BrowserSession:
     session_id: str
     model: str
     level: str
+    conversation_policy: str = "regular"
     page: Any | None = None
     state: str = "initializing"
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -49,6 +50,7 @@ class Backend(ABC):
         session_id: str,
         model: str,
         level: str,
+        conversation_policy: str = "regular",
     ) -> dict:
         raise NotImplementedError("backend does not support provider sessions")
 
@@ -79,6 +81,7 @@ class MockBackend(Backend):
         session_id: str,
         model: str,
         level: str,
+        conversation_policy: str = "regular",
     ) -> dict:
         if session_id in self._sessions:
             raise ValueError("session already exists")
@@ -87,6 +90,7 @@ class MockBackend(Backend):
             "session_id": session_id,
             "model": model,
             "level": level,
+            "conversation_policy": conversation_policy,
             "state": "ready",
         }
         self._sessions[session_id] = record
@@ -210,6 +214,7 @@ class BrowserBackend(Backend):
             "session_id": session.session_id,
             "model": session.model,
             "level": session.level,
+            "conversation_policy": session.conversation_policy,
             "state": session.state,
         }
 
@@ -228,11 +233,13 @@ class BrowserBackend(Backend):
         session_id: str,
         model: str,
         level: str,
+        conversation_policy: str = "regular",
     ) -> dict:
         session = _BrowserSession(
             session_id=session_id,
             model=model,
             level=level,
+            conversation_policy=conversation_policy,
         )
 
         # Reserve identity before slow browser initialization.
@@ -255,6 +262,7 @@ class BrowserBackend(Backend):
             session.page = await self._create_pinned_session_page(
                 model,
                 level,
+                conversation_policy,
             )
             session.state = "ready"
 
@@ -406,8 +414,9 @@ class BrowserBackend(Backend):
                 # the incoming transcript.
                 reset = True
 
-                await self._start_new_session(
-                    session.page
+                await self._start_policy_session(
+                    session.page,
+                    session.conversation_policy,
                 )
 
                 await self._apply_preferences(
@@ -472,10 +481,121 @@ class BrowserBackend(Backend):
                 if session.state == "busy":
                     session.state = "ready"
 
+    async def _start_policy_session(
+        self,
+        page,
+        conversation_policy: str,
+    ) -> None:
+        """Start a fresh ChatGPT conversation under a pinned policy."""
+        await self._start_new_session(page)
+
+        if conversation_policy == "regular":
+            return
+
+        if conversation_policy not in {
+            "temporary_personalized",
+            "temporary_unpersonalized",
+        }:
+            raise RuntimeError(
+                "unsupported conversation policy: "
+                f"{conversation_policy}"
+            )
+
+        await self._enable_temporary_chat(page)
+
+        desired_personalization = (
+            "Personalized"
+            if conversation_policy
+            == "temporary_personalized"
+            else "Unpersonalized"
+        )
+
+        await self._set_temporary_personalization(
+            page,
+            desired_personalization,
+        )
+
+    @staticmethod
+    async def _enable_temporary_chat(
+        page,
+    ) -> None:
+        """Enable Temporary Chat and verify the UI entered that mode."""
+        enabled = page.locator(
+            'button[aria-label="Turn off temporary chat"]'
+        )
+
+        if await enabled.is_visible():
+            return
+
+        toggle = page.locator(
+            'button[aria-label="Temporary chat"]'
+        )
+
+        await toggle.wait_for(
+            state="visible",
+            timeout=30_000,
+        )
+        await toggle.click()
+
+        await enabled.wait_for(
+            state="visible",
+            timeout=10_000,
+        )
+
+    @staticmethod
+    async def _set_temporary_personalization(
+        page,
+        desired: str,
+    ) -> None:
+        """Pin Temporary Chat to Personalized or Unpersonalized."""
+        desired_button = page.locator(
+            f'button[aria-label="{desired}"]'
+        )
+
+        if await desired_button.is_visible():
+            return
+
+        other = (
+            "Unpersonalized"
+            if desired == "Personalized"
+            else "Personalized"
+        )
+
+        launcher = page.locator(
+            f'button[aria-label="{other}"]'
+        )
+
+        await launcher.wait_for(
+            state="visible",
+            timeout=10_000,
+        )
+        await launcher.click()
+
+        option = page.locator(
+            '[role="menuitemradio"]'
+        ).filter(
+            has=page.get_by_text(
+                desired,
+                exact=True,
+            )
+        )
+
+        await option.wait_for(
+            state="visible",
+            timeout=10_000,
+        )
+        await option.click()
+
+        await desired_button.wait_for(
+            state="visible",
+            timeout=10_000,
+        )
+
     async def _create_pinned_session_page(
         self,
         model: str,
         level: str,
+        conversation_policy: str = "regular",
     ):
         # Ensure the persistent authenticated browser exists.
         await self._ensure_page()
@@ -498,7 +618,10 @@ class BrowserBackend(Backend):
                 )
 
             # This page/conversation now belongs to this provider session.
-            await self._start_new_session(page)
+            await self._start_policy_session(
+                page,
+                conversation_policy,
+            )
 
             # Wait for the hydrated reasoning UI and pin this
             # session's configured reasoning tier.

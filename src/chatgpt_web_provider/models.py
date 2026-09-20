@@ -53,6 +53,7 @@ class SessionCreateRequest(BaseModel):
     )
     model: str
     reasoning_effort: str
+    conversation_policy: str | None = None
 
 
 class SessionCompletionRequest(BaseModel):

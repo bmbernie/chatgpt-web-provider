@@ -17,6 +17,15 @@ DEFAULT_MODELS = (
     "gpt-5.3-codex-spark",
     "o3",
 )
+SESSION_POLICIES = (
+    "regular",
+    "temporary_personalized",
+    "temporary_unpersonalized",
+)
+
+DEFAULT_SESSION_POLICY = "regular"
+
+
 DEFAULT_MODEL_LABELS = {
     "chatgpt-5.6-sol-web": "GPT-5.6 Sol",
     "gpt-5.6-terra": "5.6 Terra",
@@ -67,6 +76,7 @@ class Settings:
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
+    session_policy: str = DEFAULT_SESSION_POLICY
 
     def __post_init__(self) -> None:
         if not self.available_models:
@@ -75,6 +85,12 @@ class Settings:
             self.available_models.insert(0, self.model_id)
         if not self.available_levels:
             self.available_levels = ["auto", "fast", "standard", "high"]
+
+        if self.session_policy not in SESSION_POLICIES:
+            raise ValueError(
+                "CHATGPT_WEB_SESSION_POLICY must be one of: "
+                + ", ".join(SESSION_POLICIES)
+            )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -101,6 +117,13 @@ class Settings:
             request_timeout_seconds=int(os.getenv("CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS", "300")),
             max_concurrent_requests=int(os.getenv("CHATGPT_WEB_MAX_CONCURRENT_REQUESTS", "1")),
             queue_timeout_seconds=int(os.getenv("CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS", "600")),
+            session_policy=(
+                os.getenv(
+                    "CHATGPT_WEB_SESSION_POLICY",
+                    DEFAULT_SESSION_POLICY,
+                ).strip().lower()
+                or DEFAULT_SESSION_POLICY
+            ),
         )
 
     def validate_for_runtime(self) -> None:

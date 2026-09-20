@@ -21,3 +21,44 @@ def test_default_model_catalog_is_current(monkeypatch):
     ]
     assert settings.available_models == list(DEFAULT_MODELS)
     assert settings.model_labels == DEFAULT_MODEL_LABELS
+
+
+def test_session_policy_defaults_to_regular(monkeypatch):
+    monkeypatch.delenv(
+        "CHATGPT_WEB_SESSION_POLICY",
+        raising=False,
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.session_policy == "regular"
+
+
+def test_session_policy_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "CHATGPT_WEB_SESSION_POLICY",
+        "temporary_unpersonalized",
+    )
+
+    settings = Settings.from_env()
+
+    assert (
+        settings.session_policy
+        == "temporary_unpersonalized"
+    )
+
+
+def test_invalid_session_policy_rejected(monkeypatch):
+    monkeypatch.setenv(
+        "CHATGPT_WEB_SESSION_POLICY",
+        "mystery",
+    )
+
+    try:
+        Settings.from_env()
+    except ValueError as exc:
+        assert "CHATGPT_WEB_SESSION_POLICY" in str(exc)
+    else:
+        raise AssertionError(
+            "invalid session policy was accepted"
+        )
