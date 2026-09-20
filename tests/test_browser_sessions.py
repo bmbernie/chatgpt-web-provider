@@ -1,0 +1,282 @@
+import asyncio
+
+from chatgpt_web_provider.backends import BrowserBackend
+from chatgpt_web_provider.config import Settings
+from chatgpt_web_provider.models import ChatMessage, CompletionResult
+
+
+class FakeBrowserSessionBackend(BrowserBackend):
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        self.created = []
+        self.closed = []
+
+        self.active_global = 0
+        self.max_active_global = 0
+
+        self.active_by_session = {}
+        self.max_active_by_session = {}
+
+    async def _create_pinned_session_page(self, model: str, level: str):
+        page = object()
+        self.created.append((model, level, page))
+        return page
+
+    async def _close_pinned_session_page(self, page) -> None:
+        self.closed.append(page)
+
+    async def _complete_pinned_session(self, session, messages):
+        session_id = session.session_id
+
+        self.active_global += 1
+        self.max_active_global = max(
+            self.max_active_global,
+            self.active_global,
+        )
+
+        current = self.active_by_session.get(session_id, 0) + 1
+        self.active_by_session[session_id] = current
+        self.max_active_by_session[session_id] = max(
+            self.max_active_by_session.get(session_id, 0),
+            current,
+        )
+
+        try:
+            await asyncio.sleep(0.05)
+
+            last_user = next(
+                (
+                    m.text()
+                    for m in reversed(messages)
+                    if m.role == "user"
+                ),
+                "",
+            )
+
+            return CompletionResult(
+                text=f"{session_id}:{last_user}",
+                model=session.model,
+                level=session.level,
+            )
+        finally:
+            self.active_global -= 1
+            self.active_by_session[session_id] -= 1
+
+
+def settings():
+    return Settings(
+        api_keys=["test-token"],
+        backend="browser",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high", "xhigh"],
+    )
+
+
+def test_browser_session_creation_pins_model_and_level():
+    async def run():
+        backend = FakeBrowserSessionBackend(settings())
+
+        record = await backend.create_session(
+            "re-high",
+            "gpt-a",
+            "high",
+        )
+
+        assert record == {
+            "session_id": "re-high",
+            "model": "gpt-a",
+            "level": "high",
+            "state": "ready",
+        }
+
+        assert len(backend.created) == 1
+        assert backend.created[0][:2] == ("gpt-a", "high")
+
+        result = await backend.complete_session(
+            "re-high",
+            [ChatMessage(role="user", content="hello")],
+        )
+
+        assert result.text == "re-high:hello"
+        assert result.model == "gpt-a"
+        assert result.level == "high"
+
+        after = await backend.get_session("re-high")
+        assert after["state"] == "ready"
+
+    asyncio.run(run())
+
+
+def test_browser_sessions_run_concurrently_but_each_session_serializes():
+    async def run():
+        backend = FakeBrowserSessionBackend(settings())
+
+        await backend.create_session("re-high", "gpt-a", "high")
+        await backend.create_session("review-xhigh", "gpt-a", "xhigh")
+
+        message = [ChatMessage(role="user", content="work")]
+
+        # Different sessions should execute concurrently.
+        await asyncio.gather(
+            backend.complete_session("re-high", message),
+            backend.complete_session("review-xhigh", message),
+        )
+
+        assert backend.max_active_global == 2
+
+        # Reset only the global observation.
+        backend.active_global = 0
+        backend.max_active_global = 0
+
+        # Two operations against the same conversation must serialize.
+        await asyncio.gather(
+            backend.complete_session("re-high", message),
+            backend.complete_session("re-high", message),
+        )
+
+        assert backend.max_active_by_session["re-high"] == 1
+
+    asyncio.run(run())
+
+
+def test_browser_session_delete_closes_page_and_removes_identity():
+    async def run():
+        backend = FakeBrowserSessionBackend(settings())
+
+        await backend.create_session(
+            "review-xhigh",
+            "gpt-a",
+            "xhigh",
+        )
+
+        page = backend.created[0][2]
+
+        await backend.delete_session("review-xhigh")
+
+        assert backend.closed == [page]
+
+        try:
+            await backend.get_session("review-xhigh")
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("deleted session still exists")
+
+    asyncio.run(run())
+
+
+class FakeKeyboard:
+    def __init__(self):
+        self.pressed = []
+
+    async def press(self, key):
+        self.pressed.append(key)
+
+
+class FakePinnedPage:
+    def __init__(self):
+        self.goto_calls = []
+        self.keyboard = FakeKeyboard()
+        self.closed = False
+
+    async def goto(self, url, **kwargs):
+        self.goto_calls.append((url, kwargs))
+
+    async def title(self):
+        return "ChatGPT"
+
+    async def close(self):
+        self.closed = True
+
+
+class FakePinnedContext:
+    def __init__(self, page):
+        self.page = page
+        self.new_page_calls = 0
+
+    async def new_page(self):
+        self.new_page_calls += 1
+        return self.page
+
+
+class PinnedPageInitializationBackend(BrowserBackend):
+    def __init__(self, settings):
+        super().__init__(settings)
+        self.fake_page = FakePinnedPage()
+        self.fake_context = FakePinnedContext(self.fake_page)
+        self.started_sessions = []
+        self.applied_preferences = []
+
+    async def _ensure_page(self):
+        self._context = self.fake_context
+        return object()
+
+    async def _start_new_session(self, page):
+        self.started_sessions.append(page)
+
+    async def _apply_preferences(self, page, model, level):
+        self.applied_preferences.append(
+            (page, model, level)
+        )
+
+
+def test_create_pinned_session_page_uses_current_preference_path():
+    async def run():
+        backend = PinnedPageInitializationBackend(settings())
+
+        page = await backend._create_pinned_session_page(
+            "gpt-a",
+            "high",
+        )
+
+        assert page is backend.fake_page
+        assert backend.fake_context.new_page_calls == 1
+
+        assert backend.started_sessions == [
+            backend.fake_page
+        ]
+
+        assert backend.applied_preferences == [
+            (
+                backend.fake_page,
+                "gpt-a",
+                "high",
+            )
+        ]
+
+        assert backend.fake_page.goto_calls
+        assert (
+            backend.fake_page.goto_calls[0][0]
+            == "https://chatgpt.com/"
+        )
+
+    asyncio.run(run())
+
+
+def test_create_pinned_session_page_closes_page_on_preference_failure():
+    class FailingBackend(PinnedPageInitializationBackend):
+        async def _apply_preferences(
+            self,
+            page,
+            model,
+            level,
+        ):
+            raise RuntimeError("preference failure")
+
+    async def run():
+        backend = FailingBackend(settings())
+
+        try:
+            await backend._create_pinned_session_page(
+                "gpt-a",
+                "high",
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "preference failure"
+        else:
+            raise AssertionError("expected preference failure")
+
+        assert backend.fake_page.closed is True
+
+    asyncio.run(run())

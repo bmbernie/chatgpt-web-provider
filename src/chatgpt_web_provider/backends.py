@@ -4,13 +4,25 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .config import Settings
 from .models import ChatMessage, CompletionResult
 
 
 logger = logging.getLogger("uvicorn.error")
+
+
+@dataclass(slots=True)
+class _BrowserSession:
+    session_id: str
+    model: str
+    level: str
+    page: Any | None = None
+    state: str = "initializing"
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class Backend(ABC):
@@ -120,7 +132,17 @@ class BrowserBackend(Backend):
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
+
+        # Legacy /v1/chat/completions page.
         self._lock = asyncio.Lock()
+
+        # Protect one-time browser/context initialization.
+        self._context_lock = asyncio.Lock()
+
+        # Protect session registry mutations only.
+        self._sessions_lock = asyncio.Lock()
+        self._sessions: dict[str, _BrowserSession] = {}
+
         self._playwright = None
         self._context = None
         self._page = None
@@ -128,24 +150,308 @@ class BrowserBackend(Backend):
     async def _ensure_page(self):
         if self._page:
             return self._page
-        try:
-            from playwright.async_api import async_playwright
-        except Exception as exc:  # pragma: no cover - depends on optional browser env
-            raise RuntimeError("playwright is not installed") from exc
 
-        Path(self.settings.profile_dir).mkdir(parents=True, exist_ok=True)
-        self._playwright = await async_playwright().start()
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            self.settings.profile_dir,
-            headless=self.settings.headless,
-            channel=self.settings.browser_channel,
-            ignore_default_args=["--disable-extensions"] if self.settings.enable_extensions else None,
-            viewport={"width": 1360, "height": 820},
-            args=["--disable-blink-features=AutomationControlled"],
+        async with self._context_lock:
+            if self._page:
+                return self._page
+
+            try:
+                from playwright.async_api import async_playwright
+            except Exception as exc:  # pragma: no cover - depends on optional browser env
+                raise RuntimeError("playwright is not installed") from exc
+
+            Path(self.settings.profile_dir).mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            self._playwright = await async_playwright().start()
+            self._context = (
+                await self._playwright.chromium.launch_persistent_context(
+                    self.settings.profile_dir,
+                    headless=self.settings.headless,
+                    channel=self.settings.browser_channel,
+                    ignore_default_args=(
+                        ["--disable-extensions"]
+                        if self.settings.enable_extensions
+                        else None
+                    ),
+                    viewport={"width": 1360, "height": 820},
+                    args=[
+                        "--disable-blink-features=AutomationControlled"
+                    ],
+                )
+            )
+
+            self._page = (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
+
+            await self._page.goto(
+                "https://chatgpt.com/",
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+
+            return self._page
+
+    @staticmethod
+    def _public_session(session: _BrowserSession) -> dict:
+        return {
+            "session_id": session.session_id,
+            "model": session.model,
+            "level": session.level,
+            "state": session.state,
+        }
+
+    async def _get_browser_session(
+        self,
+        session_id: str,
+    ) -> _BrowserSession:
+        async with self._sessions_lock:
+            try:
+                return self._sessions[session_id]
+            except KeyError:
+                raise KeyError(session_id) from None
+
+    async def create_session(
+        self,
+        session_id: str,
+        model: str,
+        level: str,
+    ) -> dict:
+        session = _BrowserSession(
+            session_id=session_id,
+            model=model,
+            level=level,
         )
-        self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
-        await self._page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60_000)
-        return self._page
+
+        # Reserve identity before slow browser initialization.
+        async with self._sessions_lock:
+            if session_id in self._sessions:
+                raise ValueError("session already exists")
+            self._sessions[session_id] = session
+
+        logger.info(
+            "browser_session_create_start session_id=%s "
+            "model=%s level=%s",
+            session_id,
+            model,
+            level,
+        )
+
+        started = time.perf_counter()
+
+        try:
+            session.page = await self._create_pinned_session_page(
+                model,
+                level,
+            )
+            session.state = "ready"
+
+            logger.info(
+                "browser_session_create_complete session_id=%s "
+                "model=%s level=%s total_ms=%.1f",
+                session_id,
+                model,
+                level,
+                (time.perf_counter() - started) * 1000,
+            )
+
+            return self._public_session(session)
+
+        except Exception:
+            async with self._sessions_lock:
+                self._sessions.pop(session_id, None)
+
+            logger.exception(
+                "browser_session_create_failed session_id=%s "
+                "model=%s level=%s",
+                session_id,
+                model,
+                level,
+            )
+            raise
+
+    async def list_sessions(self) -> list[dict]:
+        async with self._sessions_lock:
+            return [
+                self._public_session(self._sessions[key])
+                for key in sorted(self._sessions)
+            ]
+
+    async def get_session(self, session_id: str) -> dict:
+        session = await self._get_browser_session(session_id)
+        return self._public_session(session)
+
+    async def delete_session(self, session_id: str) -> None:
+        session = await self._get_browser_session(session_id)
+
+        async with session.lock:
+            session.state = "closing"
+
+            if session.page is not None:
+                await self._close_pinned_session_page(
+                    session.page
+                )
+
+            async with self._sessions_lock:
+                current = self._sessions.get(session_id)
+                if current is session:
+                    del self._sessions[session_id]
+
+        logger.info(
+            "browser_session_deleted session_id=%s",
+            session_id,
+        )
+
+    async def complete_session(
+        self,
+        session_id: str,
+        messages: list[ChatMessage],
+    ) -> CompletionResult:
+        session = await self._get_browser_session(session_id)
+
+        # Serialize only within this conversation.
+        async with session.lock:
+            if session.state != "ready" or session.page is None:
+                raise RuntimeError(
+                    f"browser session is not ready: {session_id}"
+                )
+
+            session.state = "busy"
+
+            try:
+                return await self._complete_pinned_session(
+                    session,
+                    messages,
+                )
+            finally:
+                if session.state == "busy":
+                    session.state = "ready"
+
+    async def _create_pinned_session_page(
+        self,
+        model: str,
+        level: str,
+    ):
+        # Ensure the persistent authenticated browser exists.
+        await self._ensure_page()
+
+        if self._context is None:
+            raise RuntimeError("browser context is unavailable")
+
+        page = await self._context.new_page()
+
+        try:
+            await page.goto(
+                "https://chatgpt.com/",
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+
+            if "log in" in (await page.title()).lower():
+                raise RuntimeError(
+                    "ChatGPT browser profile is not logged in"
+                )
+
+            # This page/conversation now belongs to this provider session.
+            await self._start_new_session(page)
+
+            # Wait for the hydrated reasoning UI and pin this
+            # session's configured reasoning tier.
+            await self._apply_preferences(
+                page,
+                model,
+                level,
+            )
+
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+            return page
+
+        except Exception:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            raise
+
+    @staticmethod
+    async def _close_pinned_session_page(page) -> None:
+        await page.close()
+
+    async def _complete_pinned_session(
+        self,
+        session: _BrowserSession,
+        messages: list[ChatMessage],
+    ) -> CompletionResult:
+        page = session.page
+
+        if page is None:
+            raise RuntimeError(
+                f"browser session has no page: "
+                f"{session.session_id}"
+            )
+
+        prompt = self._render_prompt(messages)
+        started = time.perf_counter()
+
+        logger.info(
+            "browser_session_request_start session_id=%s "
+            "model=%s level=%s messages=%d prompt_chars=%d",
+            session.session_id,
+            session.model,
+            session.level,
+            len(messages),
+            len(prompt),
+        )
+
+        if "log in" in (await page.title()).lower():
+            raise RuntimeError(
+                "ChatGPT browser profile is not logged in"
+            )
+
+        composer = page.locator(
+            "#prompt-textarea, div[contenteditable='true']"
+        ).last
+
+        await composer.wait_for(timeout=30_000)
+
+        try:
+            await composer.fill(prompt)
+        except Exception as exc:
+            raise RuntimeError(
+                f"ChatGPT composer fill failed "
+                f"({type(exc).__name__})"
+            ) from None
+
+        await self._submit_prompt(page, composer)
+        await self._wait_until_idle(page)
+        response_text = await self._extract_last_answer(page)
+
+        logger.info(
+            "browser_session_request_complete session_id=%s "
+            "model=%s level=%s messages=%d prompt_chars=%d "
+            "total_ms=%.1f",
+            session.session_id,
+            session.model,
+            session.level,
+            len(messages),
+            len(prompt),
+            (time.perf_counter() - started) * 1000,
+        )
+
+        return CompletionResult(
+            text=response_text,
+            model=session.model,
+            level=session.level,
+        )
 
     async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
         async with self._lock:
@@ -281,97 +587,618 @@ class BrowserBackend(Backend):
         except Exception as exc:
             return {"ok": False, "backend": "browser", "error": str(exc)}
 
-    async def _apply_preferences(self, page, model: str, level: str | None) -> None:  # pragma: no cover - browser integration
-        """Best-effort model / reasoning-level selection in the ChatGPT UI.
+    async def _apply_preferences(
+        self,
+        page,
+        model: str,
+        level: str | None,
+    ) -> None:  # pragma: no cover - browser integration
+        """Pin model and reasoning level through the composer picker."""
 
-        ChatGPT UI changes often. Failure to locate a control is non-fatal: the
-        request still runs with the currently selected browser model, while the
-        API response records the requested model/level.
-        """
-        await self._try_select_label(page, self.settings.model_label(model))
+        if model != self.settings.model_id:
+            raise RuntimeError(
+                "browser pinned sessions currently support only the "
+                f"configured model: requested={model} "
+                f"configured={self.settings.model_id}"
+            )
+
+        await self._select_model(page, model)
+
         if level:
-            await self._try_select_label(page, self.settings.level_label(level))
+            await self._select_reasoning_level(page, level)
 
     @staticmethod
-    async def _try_select_label(page, label: str) -> bool:  # pragma: no cover - browser integration
-        """Select an exact model/reasoning option from the ChatGPT UI.
+    def _normalize_preference_text(value: str | None) -> str:
+        return " ".join((value or "").split()).casefold()
 
-        Exact matching is required so labels such as "High" cannot match
-        "Extra High". Opening a menu is not considered success; an exact
-        option must actually be clicked.
-        """
-        if not label:
-            return False
+    async def _wait_for_reasoning_control(
+        self,
+        page,
+        timeout_seconds: float = 45.0,
+    ):
+        """Wait for the reasoning control inside the composer shell."""
+        known_labels = {
+            self._normalize_preference_text(
+                self.settings.level_label(level)
+            )
+            for level in self.settings.available_levels
+        }
 
-        exact_options = (
-            f"[role='menuitem']:text-is('{label}')",
-            f"[role='menuitemradio']:text-is('{label}')",
-            f"[role='option']:text-is('{label}')",
-            f"[data-radix-collection-item]:text-is('{label}')",
+        composer = page.locator(
+            "#prompt-textarea, div[contenteditable='true']"
+        ).last
+
+        await composer.wait_for(timeout=30_000)
+
+        deadline = time.monotonic() + timeout_seconds
+        started = time.monotonic()
+
+        while time.monotonic() < deadline:
+            container = composer
+
+            for depth in range(1, 9):
+                try:
+                    container = container.locator("xpath=..")
+                    controls = container.locator(
+                        "[aria-haspopup='menu']"
+                    )
+                    count = min(await controls.count(), 20)
+                except Exception:
+                    break
+
+                for index in range(count):
+                    control = controls.nth(index)
+
+                    try:
+                        if not await control.is_visible(timeout=100):
+                            continue
+
+                        raw_text = (
+                            await control.inner_text(timeout=200)
+                        ).strip()
+                    except Exception:
+                        continue
+
+                    normalized = self._normalize_preference_text(
+                        raw_text
+                    )
+
+                    if normalized not in known_labels:
+                        continue
+
+                    logger.info(
+                        "reasoning_control_ready current=%r "
+                        "composer_depth=%d wait_ms=%.1f",
+                        raw_text,
+                        depth,
+                        (time.monotonic() - started) * 1000,
+                    )
+
+                    return control, raw_text
+
+            await page.wait_for_timeout(200)
+
+        raise RuntimeError(
+            "ChatGPT reasoning picker did not become ready "
+            f"within {timeout_seconds:.0f} seconds"
         )
 
-        async def click_exact_option() -> bool:
-            for selector in exact_options:
-                try:
-                    options = page.locator(selector)
-                    count = await options.count()
+    async def _open_intelligence_picker(self, page):
+        control, current_level = (
+            await self._wait_for_reasoning_control(page)
+        )
 
-                    for index in range(count):
-                        option = options.nth(index)
-                        if await option.is_visible(timeout=500):
-                            await option.click(timeout=3000)
-                            await page.wait_for_timeout(500)
-                            return True
-                except Exception:
+        await control.click(timeout=3000)
+
+        content = page.locator(
+            "[data-testid='composer-intelligence-picker-content']"
+        ).last
+
+        await content.wait_for(
+            state="visible",
+            timeout=5000,
+        )
+
+        return control, current_level, content
+
+    async def _find_model_option(
+        self,
+        content,
+        target_label: str,
+    ):
+        advanced = content.locator(
+            "[data-testid='composer-model-picker-slider-advanced-view']"
+        ).last
+
+        await advanced.wait_for(
+            state="visible",
+            timeout=5000,
+        )
+
+        options = advanced.locator(
+            "[role='menuitemradio']"
+        )
+
+        count = min(await options.count(), 20)
+        target = self._normalize_preference_text(
+            target_label
+        )
+
+        for index in range(count):
+            option = options.nth(index)
+
+            try:
+                if not await option.is_visible(timeout=150):
                     continue
 
-            return False
-
-        # Handle the case where a menu is already open.
-        if await click_exact_option():
-            return True
-
-        opener_selectors = (
-            "[data-testid='model-switcher-dropdown-button']",
-            "button[aria-haspopup='menu']",
-            "button:has-text('ChatGPT')",
-            "button:has-text('GPT')",
-        )
-
-        # Walk every candidate opener. Using only `.first` can repeatedly
-        # open the model menu while never reaching the reasoning menu.
-        for opener_selector in opener_selectors:
-            try:
-                openers = page.locator(opener_selector)
-                opener_count = min(await openers.count(), 12)
+                raw_text = (
+                    await option.inner_text(timeout=250)
+                ).strip()
             except Exception:
                 continue
 
-            for index in range(opener_count):
-                try:
-                    opener = openers.nth(index)
+            whole = self._normalize_preference_text(
+                raw_text
+            )
 
-                    if not await opener.is_visible(timeout=500):
-                        continue
+            first_line = ""
+            for line in raw_text.splitlines():
+                if line.strip():
+                    first_line = (
+                        self._normalize_preference_text(line)
+                    )
+                    break
 
-                    await opener.click(timeout=3000)
-                    await page.wait_for_timeout(500)
+            if whole == target or first_line == target:
+                return option
 
-                    if await click_exact_option():
-                        return True
+        return None
 
-                    # Do not leave the wrong menu open while trying another.
-                    await page.keyboard.press("Escape")
+    async def _activate_model_view(
+        self,
+        page,
+        content,
+    ):
+        """Switch the intelligence picker from reasoning to model view."""
+        simple = content.locator(
+            "[data-testid='composer-model-picker-slider-simple-view']"
+        ).last
+
+        advanced = content.locator(
+            "[data-testid='composer-model-picker-slider-advanced-view']"
+        ).last
+
+        # The advanced panel exists in the DOM even when the simple panel
+        # overlays it. data-active tells us which view actually owns input.
+        try:
+            if await advanced.get_attribute("data-active") == "true":
+                return advanced
+        except Exception:
+            pass
+
+        select_model = content.locator(
+            "[role='menuitem'][aria-label='Select model']"
+        ).last
+
+        await select_model.wait_for(
+            state="visible",
+            timeout=5000,
+        )
+
+        logger.info("model_view_activate_start")
+
+        await select_model.click(timeout=3000)
+
+        deadline = time.monotonic() + 5.0
+
+        while time.monotonic() < deadline:
+            try:
+                advanced_active = (
+                    await advanced.get_attribute("data-active")
+                )
+                simple_active = (
+                    await simple.get_attribute("data-active")
+                )
+
+                if (
+                    advanced_active == "true"
+                    or simple_active != "true"
+                ):
+                    # Give the transition a short period to settle before
+                    # asking Playwright to perform a pointer action.
                     await page.wait_for_timeout(200)
 
+                    logger.info(
+                        "model_view_activate_complete "
+                        "advanced_active=%r simple_active=%r",
+                        advanced_active,
+                        simple_active,
+                    )
+
+                    return advanced
+
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(100)
+
+        raise RuntimeError(
+            "ChatGPT model picker did not switch to advanced view"
+        )
+
+    async def _select_model(
+        self,
+        page,
+        model: str,
+    ) -> None:
+        """Select the model and leave the combined picker on simple view."""
+        target_label = self.settings.model_label(model)
+
+        _, _, content = await self._open_intelligence_picker(
+            page
+        )
+
+        await self._activate_model_view(
+            page,
+            content,
+        )
+
+        option = await self._find_model_option(
+            content,
+            target_label,
+        )
+
+        if option is None:
+            raise RuntimeError(
+                f"could not find model option: {target_label}"
+            )
+
+        async def option_checked() -> bool:
+            try:
+                return (
+                    await option.get_attribute("aria-checked")
+                    == "true"
+                    or await option.get_attribute("data-state")
+                    == "checked"
+                )
+            except Exception:
+                return False
+
+        if await option_checked():
+            logger.info(
+                "model_already_selected model=%s label=%r",
+                model,
+                target_label,
+            )
+        else:
+            logger.info(
+                "model_select_start model=%s label=%r",
+                model,
+                target_label,
+            )
+
+            await option.click(timeout=5000)
+
+            deadline = time.monotonic() + 5.0
+
+            while time.monotonic() < deadline:
+                if await option_checked():
+                    logger.info(
+                        "model_select_complete model=%s label=%r",
+                        model,
+                        target_label,
+                    )
+                    break
+
+                await page.wait_for_timeout(100)
+            else:
+                raise RuntimeError(
+                    f"model selection was not verified: "
+                    f"{target_label}"
+                )
+
+        simple = content.locator(
+            "[data-testid='composer-model-picker-slider-simple-view']"
+        ).last
+
+        # Selecting a model often transitions back to simple view itself.
+        # If it did not, one Escape moves advanced -> simple. Do NOT close
+        # the picker; reasoning configuration follows immediately.
+        deadline = time.monotonic() + 5.0
+        escape_sent = False
+
+        while time.monotonic() < deadline:
+            try:
+                if (
+                    await simple.get_attribute("data-active")
+                    == "true"
+                ):
+                    logger.info(
+                        "model_to_reasoning_handoff_complete"
+                    )
+                    return
+            except Exception:
+                pass
+
+            if not escape_sent:
+                try:
+                    await page.keyboard.press("Escape")
+                    escape_sent = True
                 except Exception:
+                    pass
+
+            await page.wait_for_timeout(100)
+
+        raise RuntimeError(
+            "model selection succeeded but reasoning view "
+            "did not become active"
+        )
+
+    async def _select_reasoning_level(
+        self,
+        page,
+        level: str,
+    ) -> None:
+        """Adjust thinking effort in the already-open combined picker."""
+        target_label = self.settings.level_label(level)
+
+        picker = page.locator(
+            "[data-testid='composer-intelligence-picker-content']"
+        ).last
+
+        # Normal path: _select_model() deliberately left this open.
+        try:
+            picker_open = await picker.is_visible(timeout=500)
+        except Exception:
+            picker_open = False
+
+        # Defensive fallback for callers that invoke reasoning directly.
+        if not picker_open:
+            _, _, picker = await self._open_intelligence_picker(
+                page
+            )
+
+        simple = picker.locator(
+            "[data-testid='composer-model-picker-slider-simple-view']"
+        ).last
+
+        await simple.wait_for(
+            state="visible",
+            timeout=5000,
+        )
+
+        # Ensure the simple reasoning panel, not advanced model panel,
+        # actually owns interaction.
+        if await simple.get_attribute("data-active") != "true":
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+            deadline = time.monotonic() + 3.0
+
+            while time.monotonic() < deadline:
+                if (
+                    await simple.get_attribute("data-active")
+                    == "true"
+                ):
+                    break
+
+                await page.wait_for_timeout(100)
+            else:
+                raise RuntimeError(
+                    "reasoning simple view did not become active"
+                )
+
+        def level_from_text(value: str):
+            normalized = self._normalize_preference_text(
+                value
+            )
+
+            # Longest first: Extra High must win over High.
+            candidates = sorted(
+                (
+                    (
+                        candidate_level,
+                        self.settings.level_label(
+                            candidate_level
+                        ),
+                    )
+                    for candidate_level
+                    in self.settings.available_levels
+                ),
+                key=lambda item: len(item[1]),
+                reverse=True,
+            )
+
+            for candidate_level, candidate_label in candidates:
+                label_norm = (
+                    self._normalize_preference_text(
+                        candidate_label
+                    )
+                )
+
+                if (
+                    normalized == label_norm
+                    or normalized.startswith(
+                        label_norm + ","
+                    )
+                    or normalized.startswith(
+                        label_norm + " "
+                    )
+                ):
+                    return (
+                        candidate_level,
+                        candidate_label,
+                    )
+
+            return None
+
+        simple_text = (
+            await simple.inner_text(timeout=1000)
+        ).strip()
+
+        current = level_from_text(simple_text)
+
+        if current is None:
+            raise RuntimeError(
+                "could not determine current reasoning level: "
+                f"{simple_text!r}"
+            )
+
+        current_level, current_label = current
+
+        logger.info(
+            "reasoning_level_observed "
+            "level=%s label=%r text=%r",
+            current_level,
+            current_label,
+            simple_text,
+        )
+
+        if current_level == level:
+            logger.info(
+                "reasoning_level_already_selected "
+                "level=%s label=%r",
+                level,
+                current_label,
+            )
+
+            await page.keyboard.press("Escape")
+            return
+
+        if current_level == "xhigh" and level == "high":
+            key = "ArrowLeft"
+        elif current_level == "high" and level == "xhigh":
+            key = "ArrowRight"
+        else:
+            raise RuntimeError(
+                "unsupported reasoning transition: "
+                f"current={current_level!r} "
+                f"target={level!r}"
+            )
+
+        logger.info(
+            "reasoning_level_select_start "
+            "current=%r target=%r key=%s",
+            current_label,
+            target_label,
+            key,
+        )
+
+        # Prefer the element that exposes actual slider semantics.
+        slider = None
+        slider_selector = None
+
+        for selector in (
+            "[role='slider']",
+            "[aria-valuenow]",
+            "[aria-valuetext]",
+            "[tabindex='0']:not([aria-label='Select model'])",
+        ):
+            try:
+                candidates = simple.locator(selector)
+                count = min(await candidates.count(), 20)
+
+                for index in range(count):
+                    candidate = candidates.nth(index)
+
+                    if await candidate.is_visible(timeout=100):
+                        slider = candidate
+                        slider_selector = selector
+                        break
+            except Exception:
+                continue
+
+            if slider is not None:
+                break
+
+        sent = False
+
+        if slider is not None:
+            try:
+                logger.info(
+                    "reasoning_slider_target selector=%r "
+                    "role=%r tabindex=%r now=%r "
+                    "valuetext=%r",
+                    slider_selector,
+                    await slider.get_attribute("role"),
+                    await slider.get_attribute("tabindex"),
+                    await slider.get_attribute(
+                        "aria-valuenow"
+                    ),
+                    await slider.get_attribute(
+                        "aria-valuetext"
+                    ),
+                )
+
+                await slider.focus()
+                await slider.press(key)
+                sent = True
+            except Exception as exc:
+                logger.info(
+                    "reasoning_slider_direct_key_failed "
+                    "error_type=%s",
+                    type(exc).__name__,
+                )
+
+        if not sent:
+            # Fallback: focus the visible thinking-effort panel itself.
+            box = await simple.bounding_box()
+
+            if box:
+                await simple.click(
+                    position={
+                        "x": box["width"] / 2,
+                        "y": box["height"] / 2,
+                    },
+                    timeout=3000,
+                )
+
+            await page.keyboard.press(key)
+
+            logger.info(
+                "reasoning_slider_key_sent_fallback "
+                "key=%s",
+                key,
+            )
+
+        deadline = time.monotonic() + 5.0
+        last_text = simple_text
+
+        while time.monotonic() < deadline:
+            try:
+                last_text = (
+                    await simple.inner_text(timeout=500)
+                ).strip()
+
+                observed = level_from_text(last_text)
+
+                if observed and observed[0] == level:
+                    logger.info(
+                        "reasoning_level_select_complete "
+                        "level=%s label=%r text=%r",
+                        level,
+                        observed[1],
+                        last_text,
+                    )
+
                     try:
                         await page.keyboard.press("Escape")
                     except Exception:
                         pass
-                    continue
 
-        return False
+                    return
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(100)
+
+        raise RuntimeError(
+            "reasoning-level slider did not reach target: "
+            f"expected={target_label!r} "
+            f"observed_text={last_text!r}"
+        )
 
     @staticmethod
     def _render_prompt(messages: list[ChatMessage]) -> str:
