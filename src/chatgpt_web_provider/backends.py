@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .config import Settings
 from .models import ChatMessage, CompletionResult
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class Backend(ABC):
@@ -66,21 +71,129 @@ class BrowserBackend(Backend):
 
     async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
         async with self._lock:
-            page = await self._ensure_page()
+            total_started = time.perf_counter()
+            selected_model = model or self.settings.model_id
+            selected_level = level or "-"
+            message_count = len(messages)
             prompt = self._render_prompt(messages)
-            if "log in" in (await page.title()).lower():
-                raise RuntimeError("ChatGPT browser profile is not logged in; run setup with a visible browser first")
-            if new_session:
-                await self._start_new_session(page)
-            await self._apply_preferences(page, model or self.settings.model_id, level)
+            prompt_chars = len(prompt)
+            phase = "ensure_page"
 
-            composer = page.locator("#prompt-textarea, div[contenteditable='true']").last
-            await composer.wait_for(timeout=30_000)
-            await composer.fill(prompt)
-            await self._submit_prompt(page, composer)
-            await self._wait_until_idle(page)
-            text = await self._extract_last_answer(page)
-            return CompletionResult(text=text, model=model or self.settings.model_id, level=level)
+            logger.info(
+                "browser_request_start model=%s level=%s messages=%d prompt_chars=%d new_session=%s",
+                selected_model,
+                selected_level,
+                message_count,
+                prompt_chars,
+                str(new_session).lower(),
+            )
+
+            try:
+                phase_started = time.perf_counter()
+                page = await self._ensure_page()
+                ensure_page_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "auth_check"
+                if "log in" in (await page.title()).lower():
+                    raise RuntimeError(
+                        "ChatGPT browser profile is not logged in; "
+                        "run setup with a visible browser first"
+                    )
+
+                new_session_ms = 0.0
+                if new_session:
+                    phase = "new_session"
+                    phase_started = time.perf_counter()
+                    await self._start_new_session(page)
+                    new_session_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "preferences"
+                phase_started = time.perf_counter()
+                await self._apply_preferences(page, selected_model, level)
+                preferences_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "composer_wait"
+                composer = page.locator(
+                    "#prompt-textarea, div[contenteditable='true']"
+                ).last
+                phase_started = time.perf_counter()
+                await composer.wait_for(timeout=30_000)
+                composer_wait_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "fill"
+                phase_started = time.perf_counter()
+                try:
+                    await composer.fill(prompt)
+                except Exception as exc:
+                    # Playwright includes the fill() value in its call log.
+                    # Convert the exception here so prompts never reach journald.
+                    raise RuntimeError(
+                        f"ChatGPT composer fill failed ({type(exc).__name__})"
+                    ) from None
+                fill_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "submit"
+                phase_started = time.perf_counter()
+                await self._submit_prompt(page, composer)
+                submit_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "generation"
+                phase_started = time.perf_counter()
+                await self._wait_until_idle(page)
+                generation_ms = (time.perf_counter() - phase_started) * 1000
+
+                phase = "extraction"
+                phase_started = time.perf_counter()
+                text = await self._extract_last_answer(page)
+                extraction_ms = (time.perf_counter() - phase_started) * 1000
+
+                total_ms = (time.perf_counter() - total_started) * 1000
+
+                logger.info(
+                    "browser_request_complete model=%s level=%s "
+                    "messages=%d prompt_chars=%d new_session=%s "
+                    "ensure_page_ms=%.1f new_session_ms=%.1f "
+                    "preferences_ms=%.1f composer_wait_ms=%.1f "
+                    "fill_ms=%.1f submit_ms=%.1f generation_ms=%.1f "
+                    "extraction_ms=%.1f total_ms=%.1f",
+                    selected_model,
+                    selected_level,
+                    message_count,
+                    prompt_chars,
+                    str(new_session).lower(),
+                    ensure_page_ms,
+                    new_session_ms,
+                    preferences_ms,
+                    composer_wait_ms,
+                    fill_ms,
+                    submit_ms,
+                    generation_ms,
+                    extraction_ms,
+                    total_ms,
+                )
+
+                return CompletionResult(
+                    text=text,
+                    model=selected_model,
+                    level=level,
+                )
+
+            except Exception as exc:
+                total_ms = (time.perf_counter() - total_started) * 1000
+                logger.error(
+                    "browser_request_failed model=%s level=%s "
+                    "messages=%d prompt_chars=%d new_session=%s "
+                    "stage=%s error_type=%s total_ms=%.1f",
+                    selected_model,
+                    selected_level,
+                    message_count,
+                    prompt_chars,
+                    str(new_session).lower(),
+                    phase,
+                    type(exc).__name__,
+                    total_ms,
+                )
+                raise
 
     async def health(self) -> dict:
         try:

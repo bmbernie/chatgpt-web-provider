@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from typing import Optional
@@ -14,6 +15,9 @@ from .backends import Backend, build_backend
 from .config import Settings
 from .models import ChatCompletionRequest, ChatMessage, ResponsesRequest
 from .security import redact_secret
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _require_auth(settings: Settings):
@@ -54,13 +58,59 @@ def _validate_requested_options(settings: Settings, model: str, level: str | Non
         )
 
 
-async def _run_with_queue(settings: Settings, queue_sem: asyncio.Semaphore, operation):
+async def _run_with_queue(
+    settings: Settings,
+    queue_sem: asyncio.Semaphore,
+    operation,
+    *,
+    context: str = "provider",
+):
+    queued_at = time.perf_counter()
+
     try:
         async with asyncio.timeout(settings.queue_timeout_seconds):
-            async with queue_sem:
-                return await operation()
+            await queue_sem.acquire()
+            acquired_at = time.perf_counter()
+
+            try:
+                result = await operation()
+            except Exception as exc:
+                finished_at = time.perf_counter()
+                logger.error(
+                    "provider_queue_failed %s queue_wait_ms=%.1f "
+                    "operation_ms=%.1f total_ms=%.1f error_type=%s",
+                    context,
+                    (acquired_at - queued_at) * 1000,
+                    (finished_at - acquired_at) * 1000,
+                    (finished_at - queued_at) * 1000,
+                    type(exc).__name__,
+                )
+                raise
+            finally:
+                queue_sem.release()
+
+            finished_at = time.perf_counter()
+            logger.info(
+                "provider_queue_complete %s queue_wait_ms=%.1f "
+                "operation_ms=%.1f total_ms=%.1f",
+                context,
+                (acquired_at - queued_at) * 1000,
+                (finished_at - acquired_at) * 1000,
+                (finished_at - queued_at) * 1000,
+            )
+            return result
+
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="request timed out while waiting for provider queue") from exc
+        finished_at = time.perf_counter()
+        logger.error(
+            "provider_queue_timeout %s total_ms=%.1f",
+            context,
+            (finished_at - queued_at) * 1000,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="request timed out while waiting for provider queue",
+        ) from exc
 
 
 
@@ -173,7 +223,17 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         result = await _run_with_queue(
             settings,
             queue_sem,
-            lambda: backend.complete(req.messages, model=selected_model, new_session=new_session, level=selected_level),
+            lambda: backend.complete(
+                req.messages,
+                model=selected_model,
+                new_session=new_session,
+                level=selected_level,
+            ),
+            context=(
+                f"endpoint=chat_completions model={selected_model} "
+                f"level={selected_level or '-'} messages={len(req.messages)} "
+                f"new_session={str(new_session).lower()}"
+            ),
         )
         response_id = f"chatcmpl-{uuid.uuid4().hex}"
         usage = {
@@ -212,7 +272,17 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         result = await _run_with_queue(
             settings,
             queue_sem,
-            lambda: backend.complete(messages, model=selected_model, new_session=new_session, level=selected_level),
+            lambda: backend.complete(
+                messages,
+                model=selected_model,
+                new_session=new_session,
+                level=selected_level,
+            ),
+            context=(
+                f"endpoint=responses model={selected_model} "
+                f"level={selected_level or '-'} messages={len(messages)} "
+                f"new_session={str(new_session).lower()}"
+            ),
         )
         response_id = f"resp_{uuid.uuid4().hex}"
         return {
