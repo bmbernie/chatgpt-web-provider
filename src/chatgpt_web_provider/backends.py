@@ -77,7 +77,7 @@ class BrowserBackend(Backend):
             composer = page.locator("#prompt-textarea, div[contenteditable='true']").last
             await composer.wait_for(timeout=30_000)
             await composer.fill(prompt)
-            await page.keyboard.press("Enter")
+            await self._submit_prompt(page, composer)
             await self._wait_until_idle(page)
             text = await self._extract_last_answer(page)
             return CompletionResult(text=text, model=model or self.settings.model_id, level=level)
@@ -146,6 +146,35 @@ class BrowserBackend(Backend):
     @staticmethod
     def _render_prompt(messages: list[ChatMessage]) -> str:
         return "\n\n".join(f"{m.role.upper()}: {m.text()}" for m in messages)
+
+    @staticmethod
+    async def _submit_prompt(page, composer) -> None:  # pragma: no cover - browser integration
+        """Submit the populated ChatGPT composer.
+
+        Prefer the explicit Send button. Fall back to an Enter keypress
+        targeted at the composer itself.
+        """
+        for selector in (
+            "button[data-testid='send-button']",
+            "button[aria-label='Send prompt']",
+            "button[aria-label='Send message']",
+            "button[aria-label='Send']",
+        ):
+            try:
+                button = page.locator(selector).first
+                if (
+                    await button.count() > 0
+                    and await button.is_visible(timeout=1000)
+                    and await button.is_enabled(timeout=1000)
+                ):
+                    await button.click(timeout=3000)
+                    return
+            except Exception:
+                continue
+
+        # Fallback: ensure Enter is delivered to the composer, rather than
+        # whichever element currently owns global keyboard focus.
+        await composer.press("Enter")
 
     @staticmethod
     async def _wait_until_idle(page) -> None:  # pragma: no cover - browser integration
