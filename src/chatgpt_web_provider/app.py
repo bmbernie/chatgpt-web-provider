@@ -134,24 +134,93 @@ async def _run_with_queue(
 
 
 
-async def _chat_completion_stream(response_id: str, created: int, model: str, text: str, usage: dict):
+async def _chat_completion_stream(
+    response_id: str,
+    created: int,
+    model: str,
+    text: str,
+    usage: dict,
+    tool_calls=None,
+):
+    if tool_calls:
+        delta_tool_calls = []
+
+        for index, call in enumerate(tool_calls):
+            delta_tool_calls.append(
+                {
+                    "index": index,
+                    "id": call.id,
+                    "type": call.type,
+                    "function": {
+                        "name": call.function.name,
+                        "arguments":
+                            call.function.arguments,
+                    },
+                }
+            )
+
+        first_delta = {
+            "role": "assistant",
+            "tool_calls": delta_tool_calls,
+        }
+
+        finish_reason = "tool_calls"
+
+    else:
+        first_delta = {
+            "role": "assistant",
+            "content": text,
+        }
+
+        finish_reason = "stop"
+
     first = {
         "id": response_id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}],
+        "choices": [
+            {
+                "index": 0,
+                "delta": first_delta,
+                "finish_reason": None,
+            }
+        ],
     }
+
     final = {
         "id": response_id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": finish_reason,
+            }
+        ],
         "usage": usage,
     }
-    yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
-    yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+
+    yield (
+        "data: "
+        + json.dumps(
+            first,
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    )
+
+    yield (
+        "data: "
+        + json.dumps(
+            final,
+            ensure_ascii=False,
+        )
+        + "\n\n"
+    )
+
     yield "data: [DONE]\n\n"
 
 
@@ -410,6 +479,28 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 requested_policy
             )
 
+        tool_names = [
+            str(tool.get("function", {}).get("name", "?"))
+            for tool in (req.tools or [])
+            if isinstance(tool, dict)
+        ]
+
+        logger.info(
+            "chat_completion_capabilities "
+            "session_id=%s tools=%d "
+            "tool_choice=%s parallel_tool_calls=%s "
+            "tool_names=%s",
+            affinity_session_id or "-",
+            len(req.tools or []),
+            (
+                str(req.tool_choice)
+                if req.tool_choice is not None
+                else "-"
+            ),
+            str(req.parallel_tool_calls).lower(),
+            ",".join(tool_names),
+        )
+
         if affinity_session_id:
             valid_session_id = (
                 1 <= len(affinity_session_id) <= 64
@@ -573,6 +664,11 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                 lambda: affinity_complete(
                     affinity_session_id,
                     req.messages,
+                    tools=req.tools,
+                    tool_choice=req.tool_choice,
+                    parallel_tool_calls=(
+                        req.parallel_tool_calls
+                    ),
                 ),
                 context=(
                     "endpoint=chat_completions "
@@ -625,6 +721,7 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                     result.model,
                     result.text,
                     usage,
+                    result.tool_calls,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -632,6 +729,29 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
                     "X-Accel-Buffering": "no",
                 },
             )
+
+        if result.tool_calls:
+            response_message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    call.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    for call in result.tool_calls
+                ],
+            }
+
+            finish_reason = "tool_calls"
+
+        else:
+            response_message = {
+                "role": "assistant",
+                "content": result.text,
+            }
+
+            finish_reason = "stop"
 
         return {
             "id": response_id,
@@ -642,11 +762,8 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": result.text,
-                    },
-                    "finish_reason": "stop",
+                    "message": response_message,
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": usage,

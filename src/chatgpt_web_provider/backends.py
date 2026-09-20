@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -10,6 +11,11 @@ from typing import Any
 
 from .config import Settings
 from .models import ChatMessage, CompletionResult
+from .tool_bridge import (
+    parse_tool_calls,
+    render_tool_catalog,
+    tool_catalog_fingerprint,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -28,9 +34,10 @@ class _BrowserSession:
     # Logical OpenAI-side conversation represented by this browser
     # conversation. Affinity requests use this to avoid replaying
     # history that ChatGPT already has in the page.
-    logical_transcript: tuple[tuple[str, str], ...] = ()
-    last_request: tuple[tuple[str, str], ...] | None = None
+    logical_transcript: tuple[str, ...] = ()
+    last_request: tuple[str, ...] | None = None
     last_result: CompletionResult | None = None
+    tool_catalog_fingerprint: str | None = None
 
 
 class Backend(ABC):
@@ -53,6 +60,20 @@ class Backend(ABC):
         conversation_policy: str = "regular",
     ) -> dict:
         raise NotImplementedError("backend does not support provider sessions")
+
+    async def complete_affinity_session(
+        self,
+        session_id: str,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
+    ) -> CompletionResult:
+        return await self.complete_session(
+            session_id,
+            messages,
+        )
 
     async def list_sessions(self) -> list[dict]:
         raise NotImplementedError("backend does not support provider sessions")
@@ -351,6 +372,10 @@ class BrowserBackend(Backend):
         self,
         session_id: str,
         messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
     ) -> CompletionResult:
         """Complete an OpenAI-style full-history request on a pinned page.
 
@@ -376,8 +401,18 @@ class BrowserBackend(Backend):
                 )
 
             incoming = tuple(
-                (message.role, message.text())
+                self._message_signature(message)
                 for message in messages
+            )
+
+            requested_tool_fingerprint = (
+                tool_catalog_fingerprint(
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+                if tools
+                else None
             )
 
             # A transport retry of the exact same OpenAI request must
@@ -385,6 +420,8 @@ class BrowserBackend(Backend):
             if (
                 session.last_request == incoming
                 and session.last_result is not None
+                and session.tool_catalog_fingerprint
+                == requested_tool_fingerprint
             ):
                 logger.info(
                     "browser_affinity_replay "
@@ -428,6 +465,7 @@ class BrowserBackend(Backend):
                 session.logical_transcript = ()
                 session.last_request = None
                 session.last_result = None
+                session.tool_catalog_fingerprint = None
 
                 delta = messages
 
@@ -439,7 +477,20 @@ class BrowserBackend(Backend):
                     len(messages),
                 )
 
-            if not delta:
+            tool_catalog_prompt = None
+
+            if (
+                tools
+                and session.tool_catalog_fingerprint
+                != requested_tool_fingerprint
+            ):
+                tool_catalog_prompt = render_tool_catalog(
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+
+            if not delta and tool_catalog_prompt is None:
                 raise RuntimeError(
                     "affinity request contained no new messages"
                 )
@@ -457,23 +508,56 @@ class BrowserBackend(Backend):
             session.state = "busy"
 
             try:
-                result = await self._complete_pinned_session(
-                    session,
-                    delta,
+                if tools:
+                    result = await self._complete_pinned_session(
+                        session,
+                        delta,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        parallel_tool_calls=parallel_tool_calls,
+                        tool_catalog_prompt=tool_catalog_prompt,
+                    )
+                else:
+                    # Preserve compatibility with existing backend
+                    # test doubles that implement the original
+                    # two-argument helper.
+                    result = await self._complete_pinned_session(
+                        session,
+                        delta,
+                    )
+
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    content=(
+                        None
+                        if result.tool_calls
+                        else result.text
+                    ),
+                    tool_calls=(
+                        result.tool_calls
+                        if result.tool_calls
+                        else None
+                    ),
                 )
 
                 session.logical_transcript = (
                     incoming
                     + (
-                        (
-                            "assistant",
-                            result.text,
+                        self._message_signature(
+                            assistant_message
                         ),
                     )
                 )
 
                 session.last_request = incoming
                 session.last_result = result
+
+                if tools:
+                    session.tool_catalog_fingerprint = (
+                        requested_tool_fingerprint
+                    )
+                else:
+                    session.tool_catalog_fingerprint = None
 
                 return result
 
@@ -653,6 +737,11 @@ class BrowserBackend(Backend):
         self,
         session: _BrowserSession,
         messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
+        tool_catalog_prompt: str | None = None,
     ) -> CompletionResult:
         page = session.page
 
@@ -662,7 +751,19 @@ class BrowserBackend(Backend):
                 f"{session.session_id}"
             )
 
-        prompt = self._render_prompt(messages)
+        prompt_parts = []
+
+        if tool_catalog_prompt:
+            prompt_parts.append(
+                "SYSTEM:\n" + tool_catalog_prompt
+            )
+
+        if messages:
+            prompt_parts.append(
+                self._render_prompt(messages)
+            )
+
+        prompt = "\n\n".join(prompt_parts)
         started = time.perf_counter()
 
         logger.info(
@@ -710,10 +811,25 @@ class BrowserBackend(Backend):
             (time.perf_counter() - started) * 1000,
         )
 
+        tool_calls = (
+            parse_tool_calls(
+                response_text,
+                tools,
+                parallel_tool_calls=parallel_tool_calls,
+            )
+            if tools
+            else None
+        )
+
         return CompletionResult(
-            text=response_text,
+            text=(
+                ""
+                if tool_calls
+                else response_text
+            ),
             model=session.model,
             level=session.level,
+            tool_calls=tool_calls or [],
         )
 
     async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
@@ -1464,8 +1580,84 @@ class BrowserBackend(Backend):
         )
 
     @staticmethod
-    def _render_prompt(messages: list[ChatMessage]) -> str:
-        return "\n\n".join(f"{m.role.upper()}: {m.text()}" for m in messages)
+    def _message_signature(
+        message: ChatMessage,
+    ) -> str:
+        return json.dumps(
+            message.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _render_prompt(
+        messages: list[ChatMessage],
+    ) -> str:
+        rendered = []
+
+        for message in messages:
+            if (
+                message.role == "assistant"
+                and message.tool_calls
+            ):
+                calls = [
+                    call.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    for call in message.tool_calls
+                ]
+
+                rendered.append(
+                    "ASSISTANT EXTERNAL TOOL CALLS:\n"
+                    + json.dumps(
+                        calls,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                )
+
+                continue
+
+            if message.role == "tool":
+                metadata = []
+
+                if message.tool_call_id:
+                    metadata.append(
+                        f"id={message.tool_call_id}"
+                    )
+
+                if message.name:
+                    metadata.append(
+                        f"name={message.name}"
+                    )
+
+                suffix = (
+                    " " + " ".join(metadata)
+                    if metadata
+                    else ""
+                )
+
+                rendered.append(
+                    "EXTERNAL TOOL RESULT"
+                    + suffix
+                    + ":\n"
+                    + message.text()
+                )
+
+                continue
+
+            rendered.append(
+                f"{message.role.upper()}: "
+                f"{message.text()}"
+            )
+
+        return "\n\n".join(rendered)
 
     @staticmethod
     async def _submit_prompt(page, composer) -> None:  # pragma: no cover - browser integration

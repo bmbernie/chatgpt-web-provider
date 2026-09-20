@@ -622,3 +622,198 @@ def test_affinity_policy_is_pinned():
         conflict.json()["detail"]["error"]
         == "session_configuration_conflict"
     )
+
+
+def test_affinity_chat_completion_returns_openai_tool_calls():
+    from chatgpt_web_provider.backends import MockBackend
+    from chatgpt_web_provider.models import (
+        ToolCall,
+        ToolFunctionCall,
+    )
+
+    class ToolAwareBackend(MockBackend):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.received_tools = None
+            self.received_tool_choice = None
+            self.received_parallel = None
+
+        async def complete_affinity_session(
+            self,
+            session_id,
+            messages,
+            *,
+            tools=None,
+            tool_choice=None,
+            parallel_tool_calls=True,
+        ):
+            self.received_tools = tools
+            self.received_tool_choice = tool_choice
+            self.received_parallel = parallel_tool_calls
+
+            return CompletionResult(
+                model="gpt-a",
+                level="xhigh",
+                tool_calls=[
+                    ToolCall(
+                        id="call-test",
+                        function=ToolFunctionCall(
+                            name="worker_list",
+                            arguments="{}",
+                        ),
+                    )
+                ],
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["xhigh"],
+    )
+
+    backend = ToolAwareBackend(settings)
+    client = TestClient(
+        create_app(settings, backend=backend)
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "worker_list",
+                "description": "List workers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        }
+    ]
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-ChatGPT-Session": "tool-affinity",
+        },
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "List workers.",
+                }
+            ],
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+        },
+    )
+
+    assert response.status_code == 200
+
+    choice = response.json()["choices"][0]
+
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+
+    assert choice["message"]["tool_calls"] == [
+        {
+            "id": "call-test",
+            "type": "function",
+            "function": {
+                "name": "worker_list",
+                "arguments": "{}",
+            },
+        }
+    ]
+
+    assert backend.received_tools == tools
+    assert backend.received_tool_choice == "auto"
+    assert backend.received_parallel is True
+
+
+def test_streaming_affinity_tool_call_uses_tool_calls_finish_reason():
+    from chatgpt_web_provider.backends import MockBackend
+    from chatgpt_web_provider.models import (
+        ToolCall,
+        ToolFunctionCall,
+    )
+
+    class ToolAwareBackend(MockBackend):
+        async def complete_affinity_session(
+            self,
+            session_id,
+            messages,
+            *,
+            tools=None,
+            tool_choice=None,
+            parallel_tool_calls=True,
+        ):
+            return CompletionResult(
+                model="gpt-a",
+                level="xhigh",
+                tool_calls=[
+                    ToolCall(
+                        id="call-stream",
+                        function=ToolFunctionCall(
+                            name="worker_list",
+                            arguments="{}",
+                        ),
+                    )
+                ],
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["xhigh"],
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=ToolAwareBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+            "X-ChatGPT-Session": "tool-stream",
+        },
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "stream": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "List workers.",
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "worker_list",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert '"tool_calls"' in response.text
+    assert '"call-stream"' in response.text
+    assert '"finish_reason": "tool_calls"' in response.text

@@ -564,3 +564,153 @@ def test_temporary_personalization_uses_exact_menu_text():
         assert page.menu.clicks == 1
 
     asyncio.run(run())
+
+
+def test_affinity_tool_call_and_tool_result_preserve_delta_history():
+    from chatgpt_web_provider.models import (
+        ToolCall,
+        ToolFunctionCall,
+    )
+
+    class ToolAffinityBackend(FakeBrowserSessionBackend):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.submitted = []
+            self.catalog_prompts = []
+            self.calls = 0
+
+        async def _complete_pinned_session(
+            self,
+            session,
+            messages,
+            *,
+            tools=None,
+            tool_choice=None,
+            parallel_tool_calls=True,
+            tool_catalog_prompt=None,
+        ):
+            self.submitted.append(
+                [
+                    message.model_dump(
+                        exclude_none=True
+                    )
+                    for message in messages
+                ]
+            )
+
+            self.catalog_prompts.append(
+                tool_catalog_prompt
+            )
+
+            self.calls += 1
+
+            if self.calls == 1:
+                return CompletionResult(
+                    model=session.model,
+                    level=session.level,
+                    tool_calls=[
+                        ToolCall(
+                            id="call-1",
+                            function=ToolFunctionCall(
+                                name="worker_list",
+                                arguments="{}",
+                            ),
+                        )
+                    ],
+                )
+
+            return CompletionResult(
+                text="five workers",
+                model=session.model,
+                level=session.level,
+            )
+
+    async def run():
+        backend = ToolAffinityBackend(settings())
+
+        await backend.create_session(
+            "ctf-parent",
+            "gpt-a",
+            "xhigh",
+        )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "worker_list",
+                    "description": "List workers.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            }
+        ]
+
+        first_messages = [
+            ChatMessage(
+                role="user",
+                content="List workers.",
+            ),
+        ]
+
+        first = await backend.complete_affinity_session(
+            "ctf-parent",
+            first_messages,
+            tools=tools,
+            tool_choice="auto",
+            parallel_tool_calls=True,
+        )
+
+        assert len(first.tool_calls) == 1
+        assert first.tool_calls[0].id == "call-1"
+        assert backend.catalog_prompts[0] is not None
+
+        second_messages = [
+            ChatMessage(
+                role="user",
+                content="List workers.",
+            ),
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=first.tool_calls,
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"workers":["re-high"]}',
+                tool_call_id="call-1",
+            ),
+        ]
+
+        second = await backend.complete_affinity_session(
+            "ctf-parent",
+            second_messages,
+            tools=tools,
+            tool_choice="auto",
+            parallel_tool_calls=True,
+        )
+
+        assert second.text == "five workers"
+
+        # The browser already contains the user turn and its
+        # external-tool request. Only the tool result is new.
+        assert len(backend.submitted[1]) == 1
+        assert backend.submitted[1][0]["role"] == "tool"
+        assert (
+            backend.submitted[1][0]["tool_call_id"]
+            == "call-1"
+        )
+
+        # Same catalog is not re-injected every turn.
+        assert backend.catalog_prompts[1] is None
+
+        session = await backend._get_browser_session(
+            "ctf-parent"
+        )
+
+        assert session.logical_transcript
+        assert backend.calls == 2
+
+    asyncio.run(run())

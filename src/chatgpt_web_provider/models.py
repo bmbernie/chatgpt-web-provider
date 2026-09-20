@@ -3,9 +3,23 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ToolFunctionCall(BaseModel):
+    name: str
+    arguments: str
+
+
+class ToolCall(BaseModel):
+    id: str
+    type: str = "function"
+    function: ToolFunctionCall
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str | list | dict | None = ""
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
     def text(self) -> str:
         if isinstance(self.content, str):
@@ -22,6 +36,9 @@ class ChatCompletionRequest(BaseModel):
     new_session: bool = False
     level: str | None = None
     reasoning_effort: str | None = None
+    tools: list[dict] | None = None
+    tool_choice: str | dict | None = None
+    parallel_tool_calls: bool = True
 
 
 class ResponsesRequest(BaseModel):
@@ -36,9 +53,12 @@ class ResponsesRequest(BaseModel):
 
 
 class CompletionResult(BaseModel):
-    text: str
+    text: str = ""
     model: str
     level: str | None = None
+    tool_calls: list[ToolCall] = Field(
+        default_factory=list
+    )
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
