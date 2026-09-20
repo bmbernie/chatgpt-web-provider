@@ -339,39 +339,235 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         }
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(req: ChatCompletionRequest, x_new_session: Optional[str] = Header(default=None, alias="X-New-Session"), _token: str = Depends(auth)):
+    async def chat_completions(
+        req: ChatCompletionRequest,
+        x_new_session: Optional[str] = Header(
+            default=None,
+            alias="X-New-Session",
+        ),
+        x_chatgpt_session: Optional[str] = Header(
+            default=None,
+            alias="X-ChatGPT-Session",
+        ),
+        _token: str = Depends(auth),
+    ):
         started = int(time.time())
         selected_model = req.model or settings.model_id
         selected_level = _request_level(req)
-        _validate_requested_options(settings, selected_model, selected_level)
-        new_session = req.new_session or _truthy_header(x_new_session)
-        result = await _run_with_queue(
+
+        _validate_requested_options(
             settings,
-            queue_sem,
-            lambda: backend.complete(
-                req.messages,
-                model=selected_model,
-                new_session=new_session,
-                level=selected_level,
-            ),
-            context=(
-                f"endpoint=chat_completions model={selected_model} "
-                f"level={selected_level or '-'} messages={len(req.messages)} "
-                f"new_session={str(new_session).lower()}"
-            ),
+            selected_model,
+            selected_level,
         )
-        response_id = f"chatcmpl-{uuid.uuid4().hex}"
+
+        new_session = (
+            req.new_session
+            or _truthy_header(x_new_session)
+        )
+
+        affinity_session_id = (
+            x_chatgpt_session.strip()
+            if x_chatgpt_session
+            else ""
+        )
+
+        if affinity_session_id:
+            valid_session_id = (
+                1 <= len(affinity_session_id) <= 64
+                and affinity_session_id[0].isascii()
+                and affinity_session_id[0].isalnum()
+                and all(
+                    (
+                        char.isascii()
+                        and (
+                            char.isalnum()
+                            or char in "._-"
+                        )
+                    )
+                    for char in affinity_session_id
+                )
+            )
+
+            if not valid_session_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "invalid_session_id",
+                        "session_id": affinity_session_id,
+                    },
+                )
+
+            try:
+                existing = await backend.get_session(
+                    affinity_session_id
+                )
+            except KeyError:
+                existing = None
+            except NotImplementedError as exc:
+                raise HTTPException(
+                    status_code=501,
+                    detail={
+                        "error": "session_affinity_unsupported",
+                    },
+                ) from exc
+
+            effective_level = selected_level
+
+            if existing is not None:
+                if effective_level is None:
+                    effective_level = existing["level"]
+
+                if (
+                    existing["model"] != selected_model
+                    or existing["level"] != effective_level
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error":
+                                "session_configuration_conflict",
+                            "session_id":
+                                affinity_session_id,
+                            "existing_model":
+                                existing["model"],
+                            "existing_level":
+                                existing["level"],
+                            "requested_model":
+                                selected_model,
+                            "requested_level":
+                                effective_level,
+                        },
+                    )
+
+                if new_session:
+                    await backend.delete_session(
+                        affinity_session_id
+                    )
+                    existing = None
+
+            if existing is None:
+                if effective_level is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error":
+                                "session_affinity_requires_level",
+                            "session_id":
+                                affinity_session_id,
+                        },
+                    )
+
+                try:
+                    await backend.create_session(
+                        affinity_session_id,
+                        selected_model,
+                        effective_level,
+                    )
+
+                except ValueError:
+                    # Another request may have won a concurrent
+                    # first-use race. Adopt it only if configuration
+                    # is exactly compatible.
+                    existing = await backend.get_session(
+                        affinity_session_id
+                    )
+
+                    if (
+                        existing["model"] != selected_model
+                        or existing["level"]
+                        != effective_level
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "error":
+                                    "session_configuration_conflict",
+                                "session_id":
+                                    affinity_session_id,
+                                "existing_model":
+                                    existing["model"],
+                                "existing_level":
+                                    existing["level"],
+                                "requested_model":
+                                    selected_model,
+                                "requested_level":
+                                    effective_level,
+                            },
+                        )
+
+            affinity_complete = getattr(
+                backend,
+                "complete_affinity_session",
+                backend.complete_session,
+            )
+
+            result = await _run_with_queue(
+                settings,
+                queue_sem,
+                lambda: affinity_complete(
+                    affinity_session_id,
+                    req.messages,
+                ),
+                context=(
+                    "endpoint=chat_completions "
+                    f"session_id={affinity_session_id} "
+                    f"model={selected_model} "
+                    f"level={effective_level} "
+                    f"messages={len(req.messages)} "
+                    "affinity=true "
+                    f"new_session={str(new_session).lower()}"
+                ),
+            )
+
+        else:
+            result = await _run_with_queue(
+                settings,
+                queue_sem,
+                lambda: backend.complete(
+                    req.messages,
+                    model=selected_model,
+                    new_session=new_session,
+                    level=selected_level,
+                ),
+                context=(
+                    "endpoint=chat_completions "
+                    f"model={selected_model} "
+                    f"level={selected_level or '-'} "
+                    f"messages={len(req.messages)} "
+                    f"new_session={str(new_session).lower()}"
+                ),
+            )
+
+        response_id = (
+            f"chatcmpl-{uuid.uuid4().hex}"
+        )
+
         usage = {
             "prompt_tokens": result.prompt_tokens,
-            "completion_tokens": result.completion_tokens,
-            "total_tokens": result.prompt_tokens + result.completion_tokens,
+            "completion_tokens":
+                result.completion_tokens,
+            "total_tokens":
+                result.prompt_tokens
+                + result.completion_tokens,
         }
+
         if req.stream:
             return StreamingResponse(
-                _chat_completion_stream(response_id, started, result.model, result.text, usage),
+                _chat_completion_stream(
+                    response_id,
+                    started,
+                    result.model,
+                    result.text,
+                    usage,
+                ),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
             )
+
         return {
             "id": response_id,
             "object": "chat.completion",
@@ -379,7 +575,14 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             "model": result.model,
             "level": result.level,
             "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": result.text}, "finish_reason": "stop"}
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": result.text,
+                    },
+                    "finish_reason": "stop",
+                }
             ],
             "usage": usage,
         }

@@ -369,3 +369,100 @@ def test_session_completion_cannot_override_pinned_model_or_reasoning():
     )
 
     assert attempt.status_code == 422
+
+
+def test_chat_completions_affinity_lazily_creates_and_pins_session():
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a", "gpt-b"],
+        available_levels=["high", "xhigh"],
+    )
+
+    client = TestClient(create_app(settings))
+
+    headers = {
+        "Authorization": "Bearer test-token",
+        "X-ChatGPT-Session": "passthrough-xhigh",
+    }
+
+    first = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "first",
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+
+    session = client.get(
+        "/v1/sessions/passthrough-xhigh",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    )
+
+    assert session.status_code == 200
+    assert session.json()["model"] == "gpt-a"
+    assert session.json()["level"] == "xhigh"
+
+    # Affinity identity pins both model and reasoning tier.
+    conflict = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "high",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "different tier",
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert conflict.status_code == 409
+    assert (
+        conflict.json()["detail"]["error"]
+        == "session_configuration_conflict"
+    )
+
+    # Explicit reset retains the same pinned configuration.
+    reset = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "xhigh",
+            "new_session": True,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "fresh conversation",
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert reset.status_code == 200
+
+    session = client.get(
+        "/v1/sessions/passthrough-xhigh",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+    )
+
+    assert session.status_code == 200
+    assert session.json()["model"] == "gpt-a"
+    assert session.json()["level"] == "xhigh"

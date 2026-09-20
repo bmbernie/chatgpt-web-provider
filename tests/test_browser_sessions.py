@@ -280,3 +280,140 @@ def test_create_pinned_session_page_closes_page_on_preference_failure():
         assert backend.fake_page.closed is True
 
     asyncio.run(run())
+
+
+def test_affinity_session_submits_only_new_transcript_delta():
+    class AffinityBackend(FakeBrowserSessionBackend):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.submitted_batches = []
+            self.reset_pages = []
+
+        async def _complete_pinned_session(
+            self,
+            session,
+            messages,
+        ):
+            self.submitted_batches.append(
+                [
+                    (message.role, message.text())
+                    for message in messages
+                ]
+            )
+
+            return await super()._complete_pinned_session(
+                session,
+                messages,
+            )
+
+        async def _start_new_session(self, page):
+            self.reset_pages.append(page)
+
+        async def _apply_preferences(
+            self,
+            page,
+            model,
+            level,
+        ):
+            return None
+
+    async def run():
+        backend = AffinityBackend(settings())
+
+        await backend.create_session(
+            "passthrough-xhigh",
+            "gpt-a",
+            "xhigh",
+        )
+
+        first_messages = [
+            ChatMessage(
+                role="system",
+                content="system prompt",
+            ),
+            ChatMessage(
+                role="user",
+                content="alpha",
+            ),
+        ]
+
+        first = await backend.complete_affinity_session(
+            "passthrough-xhigh",
+            first_messages,
+        )
+
+        assert backend.submitted_batches == [
+            [
+                ("system", "system prompt"),
+                ("user", "alpha"),
+            ]
+        ]
+
+        second_messages = [
+            ChatMessage(
+                role="system",
+                content="system prompt",
+            ),
+            ChatMessage(
+                role="user",
+                content="alpha",
+            ),
+            ChatMessage(
+                role="assistant",
+                content=first.text,
+            ),
+            ChatMessage(
+                role="user",
+                content="beta",
+            ),
+        ]
+
+        second = await backend.complete_affinity_session(
+            "passthrough-xhigh",
+            second_messages,
+        )
+
+        # Browser conversation already contains the first exchange.
+        # Only the newly appended Hermes message is submitted.
+        assert backend.submitted_batches[1] == [
+            ("user", "beta"),
+        ]
+
+        assert backend.reset_pages == []
+
+        # Exact retry must not submit to ChatGPT again.
+        repeated = await backend.complete_affinity_session(
+            "passthrough-xhigh",
+            second_messages,
+        )
+
+        assert repeated.text == second.text
+        assert len(backend.submitted_batches) == 2
+
+        # Simulate Hermes context compression / history rewrite.
+        compacted = [
+            ChatMessage(
+                role="system",
+                content="compressed context",
+            ),
+            ChatMessage(
+                role="user",
+                content="gamma",
+            ),
+        ]
+
+        await backend.complete_affinity_session(
+            "passthrough-xhigh",
+            compacted,
+        )
+
+        assert len(backend.reset_pages) == 1
+
+        # After discontinuity, the complete new logical transcript
+        # seeds a fresh ChatGPT conversation.
+        assert backend.submitted_batches[2] == [
+            ("system", "compressed context"),
+            ("user", "gamma"),
+        ]
+
+    asyncio.run(run())

@@ -24,6 +24,13 @@ class _BrowserSession:
     state: str = "initializing"
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    # Logical OpenAI-side conversation represented by this browser
+    # conversation. Affinity requests use this to avoid replaying
+    # history that ChatGPT already has in the page.
+    logical_transcript: tuple[tuple[str, str], ...] = ()
+    last_request: tuple[tuple[str, str], ...] | None = None
+    last_result: CompletionResult | None = None
+
 
 class Backend(ABC):
     def __init__(self, settings: Settings):
@@ -328,6 +335,139 @@ class BrowserBackend(Backend):
                     session,
                     messages,
                 )
+            finally:
+                if session.state == "busy":
+                    session.state = "ready"
+
+    async def complete_affinity_session(
+        self,
+        session_id: str,
+        messages: list[ChatMessage],
+    ) -> CompletionResult:
+        """Complete an OpenAI-style full-history request on a pinned page.
+
+        The client supplies its complete logical transcript on every call,
+        while the browser page already retains prior ChatGPT history.
+        Submit only the new suffix when the histories agree.
+
+        If the client history is rewritten or compacted, start a fresh
+        ChatGPT conversation and seed it with the new transcript.
+        """
+        session = await self._get_browser_session(
+            session_id
+        )
+
+        async with session.lock:
+            if (
+                session.state != "ready"
+                or session.page is None
+            ):
+                raise RuntimeError(
+                    f"browser session is not ready: "
+                    f"{session_id}"
+                )
+
+            incoming = tuple(
+                (message.role, message.text())
+                for message in messages
+            )
+
+            # A transport retry of the exact same OpenAI request must
+            # not submit the user message to ChatGPT a second time.
+            if (
+                session.last_request == incoming
+                and session.last_result is not None
+            ):
+                logger.info(
+                    "browser_affinity_replay "
+                    "session_id=%s messages=%d",
+                    session_id,
+                    len(messages),
+                )
+                return session.last_result
+
+            recorded = session.logical_transcript
+
+            extends_recorded = (
+                len(incoming) >= len(recorded)
+                and incoming[:len(recorded)] == recorded
+            )
+
+            reset = False
+
+            if extends_recorded:
+                delta = messages[len(recorded):]
+
+            else:
+                # Hermes may compact or otherwise rewrite its logical
+                # transcript. The old browser conversation can no
+                # longer represent that context exactly, so establish
+                # a fresh ChatGPT conversation and seed it once with
+                # the incoming transcript.
+                reset = True
+
+                await self._start_new_session(
+                    session.page
+                )
+
+                await self._apply_preferences(
+                    session.page,
+                    session.model,
+                    session.level,
+                )
+
+                session.logical_transcript = ()
+                session.last_request = None
+                session.last_result = None
+
+                delta = messages
+
+                logger.info(
+                    "browser_affinity_reset "
+                    "session_id=%s reason=transcript_discontinuity "
+                    "incoming_messages=%d",
+                    session_id,
+                    len(messages),
+                )
+
+            if not delta:
+                raise RuntimeError(
+                    "affinity request contained no new messages"
+                )
+
+            logger.info(
+                "browser_affinity_request "
+                "session_id=%s incoming_messages=%d "
+                "delta_messages=%d reset=%s",
+                session_id,
+                len(messages),
+                len(delta),
+                str(reset).lower(),
+            )
+
+            session.state = "busy"
+
+            try:
+                result = await self._complete_pinned_session(
+                    session,
+                    delta,
+                )
+
+                session.logical_transcript = (
+                    incoming
+                    + (
+                        (
+                            "assistant",
+                            result.text,
+                        ),
+                    )
+                )
+
+                session.last_request = incoming
+                session.last_result = result
+
+                return result
+
             finally:
                 if session.state == "busy":
                     session.state = "ready"
