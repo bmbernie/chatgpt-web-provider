@@ -819,6 +819,7 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             "hello",
             inline_fill_max_chars=16_384,
             clipboard_chunk_size=4_096,
+            clipboard_origin="https://chatgpt.com",
         )
 
         assert method == "fill"
@@ -835,6 +836,7 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             large_text,
             inline_fill_max_chars=16_384,
             clipboard_chunk_size=4_096,
+            clipboard_origin="https://chatgpt.com",
         )
 
         assert method == "clipboard_chunked_paste"

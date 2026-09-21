@@ -4,6 +4,7 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 DEFAULT_MODEL = "chatgpt-5.6-sol-web"
@@ -216,6 +217,7 @@ class Settings:
     model_labels: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODEL_LABELS))
     available_levels: list[str] = field(default_factory=list)
     level_labels: dict[str, str] = field(default_factory=dict)
+    chatgpt_base_url: str = "https://chatgpt.com/"
     host: str = "127.0.0.1"
     port: int = 8791
     public_base_url: str = "http://127.0.0.1:8791"
@@ -223,8 +225,12 @@ class Settings:
     headless: bool = True
     browser_channel: str | None = None
     enable_extensions: bool = False
+    viewport_width: int = 1360
+    viewport_height: int = 820
     inline_fill_max_chars: int = 16_384
     clipboard_chunk_size: int = 4_096
+    navigation_timeout_ms: int = 60_000
+    composer_ready_timeout_ms: int = 30_000
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -244,6 +250,22 @@ class Settings:
                 "CHATGPT_WEB_SESSION_POLICY must be one of: "
                 + ", ".join(SESSION_POLICIES)
             )
+
+    @property
+    def chatgpt_origin(self) -> str:
+        """Origin used for browser permissions such as clipboard access."""
+        parsed = urlsplit(self.chatgpt_base_url)
+
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+        ):
+            raise ValueError(
+                "CHATGPT_WEB_CHATGPT_BASE_URL / "
+                "chatgpt.base_url must be an absolute HTTP(S) URL"
+            )
+
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     @classmethod
     def from_env(
@@ -481,6 +503,15 @@ class Settings:
             model_labels=model_labels,
             available_levels=available_levels,
             level_labels=level_labels,
+            chatgpt_base_url=os.getenv(
+                "CHATGPT_WEB_CHATGPT_BASE_URL",
+                str(
+                    chatgpt.get(
+                        "base_url",
+                        "https://chatgpt.com/",
+                    )
+                ),
+            ),
             host=os.getenv(
                 "CHATGPT_WEB_HOST",
                 str(
@@ -520,6 +551,28 @@ class Settings:
                 "CHATGPT_WEB_ENABLE_EXTENSIONS",
                 extensions_default,
             ),
+            viewport_width=int(
+                os.getenv(
+                    "CHATGPT_WEB_VIEWPORT_WIDTH",
+                    str(
+                        browser.get(
+                            "viewport_width",
+                            1360,
+                        )
+                    ),
+                )
+            ),
+            viewport_height=int(
+                os.getenv(
+                    "CHATGPT_WEB_VIEWPORT_HEIGHT",
+                    str(
+                        browser.get(
+                            "viewport_height",
+                            820,
+                        )
+                    ),
+                )
+            ),
             inline_fill_max_chars=int(
                 os.getenv(
                     "CHATGPT_WEB_INLINE_FILL_MAX_CHARS",
@@ -538,6 +591,28 @@ class Settings:
                         transport.get(
                             "clipboard_chunk_size",
                             4_096,
+                        )
+                    ),
+                )
+            ),
+            navigation_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_NAVIGATION_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "navigation_ms",
+                            60_000,
+                        )
+                    ),
+                )
+            ),
+            composer_ready_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_COMPOSER_READY_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "composer_ready_ms",
+                            30_000,
                         )
                     ),
                 )
@@ -587,6 +662,25 @@ class Settings:
         )
 
     def validate_for_runtime(self) -> None:
+        # Validate the configured browser target and browser-level limits.
+        _ = self.chatgpt_origin
+
+        if self.viewport_width < 1:
+            raise ValueError(
+                "CHATGPT_WEB_VIEWPORT_WIDTH must be >= 1"
+            )
+        if self.viewport_height < 1:
+            raise ValueError(
+                "CHATGPT_WEB_VIEWPORT_HEIGHT must be >= 1"
+            )
+        if self.navigation_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_NAVIGATION_TIMEOUT_MS must be >= 1"
+            )
+        if self.composer_ready_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_COMPOSER_READY_TIMEOUT_MS must be >= 1"
+            )
         if not self.api_keys:
             raise ValueError("CHATGPT_WEB_API_KEYS must contain at least one API key")
         if self.backend not in {"mock", "browser"}:

@@ -9,6 +9,9 @@ def main() -> None:
     """Open a visible persistent browser profile for the first ChatGPT login."""
     settings = Settings.from_env()
     settings.headless = False
+
+    # Validate the configured ChatGPT browser target before launching.
+    _ = settings.chatgpt_origin
     Path(settings.profile_dir).mkdir(parents=True, exist_ok=True)
 
     from playwright.sync_api import sync_playwright
@@ -19,11 +22,18 @@ def main() -> None:
             headless=False,
             channel=settings.browser_channel,
             ignore_default_args=["--disable-extensions"] if settings.enable_extensions else None,
-            viewport={"width": 1360, "height": 820},
+            viewport={
+                "width": settings.viewport_width,
+                "height": settings.viewport_height,
+            },
             args=["--disable-blink-features=AutomationControlled"],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+        page.goto(
+            settings.chatgpt_base_url,
+            wait_until="domcontentloaded",
+            timeout=settings.navigation_timeout_ms,
+        )
         print("Log in to ChatGPT in the opened browser, select the desired model, then press Enter here to close.")
         input()
         ctx.close()

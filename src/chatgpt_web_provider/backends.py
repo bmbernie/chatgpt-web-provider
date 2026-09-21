@@ -304,6 +304,7 @@ class BrowserBackend(Backend):
         *,
         inline_fill_max_chars: int,
         clipboard_chunk_size: int,
+        clipboard_origin: str,
     ) -> str:
         """Write prompt text without making large contenteditable fills stall."""
 
@@ -334,7 +335,7 @@ class BrowserBackend(Backend):
                     "clipboard-read",
                     "clipboard-write",
                 ],
-                origin="https://chatgpt.com",
+                origin=clipboard_origin,
             )
 
             phase_started = time.perf_counter()
@@ -435,7 +436,10 @@ class BrowserBackend(Backend):
                         if self.settings.enable_extensions
                         else None
                     ),
-                    viewport={"width": 1360, "height": 820},
+                    viewport={
+                        "width": self.settings.viewport_width,
+                        "height": self.settings.viewport_height,
+                    },
                     args=[
                         "--disable-blink-features=AutomationControlled"
                     ],
@@ -449,9 +453,9 @@ class BrowserBackend(Backend):
             )
 
             await self._page.goto(
-                "https://chatgpt.com/",
+                self.settings.chatgpt_base_url,
                 wait_until="domcontentloaded",
-                timeout=60_000,
+                timeout=self.settings.navigation_timeout_ms,
             )
 
             return self._page
@@ -956,9 +960,9 @@ class BrowserBackend(Backend):
 
         try:
             await page.goto(
-                "https://chatgpt.com/",
+                self.settings.chatgpt_base_url,
                 wait_until="domcontentloaded",
-                timeout=60_000,
+                timeout=self.settings.navigation_timeout_ms,
             )
 
             if "log in" in (await page.title()).lower():
@@ -1092,7 +1096,9 @@ class BrowserBackend(Backend):
             "#prompt-textarea, div[contenteditable='true']"
         ).last
 
-        await composer.wait_for(timeout=30_000)
+        await composer.wait_for(
+            timeout=self.settings.composer_ready_timeout_ms
+        )
 
         await self._raise_if_ui_rate_limited(
             page,
@@ -1123,6 +1129,7 @@ class BrowserBackend(Backend):
                 clipboard_chunk_size=(
                     self.settings.clipboard_chunk_size
                 ),
+                clipboard_origin=self.settings.chatgpt_origin,
             )
         except Exception as exc:
             await self._raise_if_ui_rate_limited(
@@ -1238,7 +1245,9 @@ class BrowserBackend(Backend):
                     "#prompt-textarea, div[contenteditable='true']"
                 ).last
                 phase_started = time.perf_counter()
-                await composer.wait_for(timeout=30_000)
+                await composer.wait_for(
+            timeout=self.settings.composer_ready_timeout_ms
+        )
                 composer_wait_ms = (time.perf_counter() - phase_started) * 1000
 
                 phase = "fill"
@@ -1365,7 +1374,9 @@ class BrowserBackend(Backend):
             "#prompt-textarea, div[contenteditable='true']"
         ).last
 
-        await composer.wait_for(timeout=30_000)
+        await composer.wait_for(
+            timeout=self.settings.composer_ready_timeout_ms
+        )
 
         deadline = time.monotonic() + timeout_seconds
         started = time.monotonic()
@@ -2114,10 +2125,9 @@ class BrowserBackend(Backend):
                 return
             await page.wait_for_timeout(1000)
 
-    @staticmethod
-    async def _start_new_session(page) -> None:  # pragma: no cover - browser integration
+    async def _start_new_session(self, page) -> None:  # pragma: no cover - browser integration
         """Move ChatGPT to a fresh conversation before sending the prompt."""
-        await page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(self.settings.chatgpt_base_url, wait_until="domcontentloaded", timeout=self.settings.navigation_timeout_ms)
         await page.wait_for_timeout(1500)
         if await page.locator("#prompt-textarea, div[contenteditable='true']").count() > 0:
             return

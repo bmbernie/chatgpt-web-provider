@@ -27,6 +27,7 @@ backend = "browser"
 api_keys = ["must-not-load"]
 
 [chatgpt]
+base_url = "https://chatgpt.example.test/app/"
 model = "gpt-test"
 models = ["gpt-test", "gpt-other"]
 model_labels = {{ "gpt-test" = "Test Model" }}
@@ -44,6 +45,8 @@ profile_dir = "{profile}"
 headless = false
 channel = "chrome"
 enable_extensions = true
+viewport_width = 1440
+viewport_height = 900
 
 [transport]
 inline_fill_max_chars = 12000
@@ -52,6 +55,8 @@ clipboard_chunk_size = 2048
 [timeouts]
 request_seconds = 111
 queue_seconds = 222
+navigation_ms = 44444
+composer_ready_ms = 55555
 
 [queue]
 max_concurrent_requests = 3
@@ -65,6 +70,12 @@ retry_after_seconds = 333
 
     assert settings.api_keys == []
     assert settings.backend == "browser"
+    assert settings.chatgpt_base_url == (
+        "https://chatgpt.example.test/app/"
+    )
+    assert settings.chatgpt_origin == (
+        "https://chatgpt.example.test"
+    )
     assert settings.model_id == "gpt-test"
     assert settings.available_models == [
         "gpt-test",
@@ -86,9 +97,13 @@ retry_after_seconds = 333
     assert settings.headless is False
     assert settings.browser_channel == "chrome"
     assert settings.enable_extensions is True
+    assert settings.viewport_width == 1440
+    assert settings.viewport_height == 900
 
     assert settings.inline_fill_max_chars == 12000
     assert settings.clipboard_chunk_size == 2048
+    assert settings.navigation_timeout_ms == 44444
+    assert settings.composer_ready_timeout_ms == 55555
 
     assert settings.request_timeout_seconds == 111
     assert settings.queue_timeout_seconds == 222
@@ -190,3 +205,60 @@ def test_missing_default_config_is_optional(
 
     assert settings.host == "127.0.0.1"
     assert settings.port == 8791
+
+
+def test_browser_environment_overrides_toml(
+    tmp_path,
+    monkeypatch,
+):
+    clear_provider_env(monkeypatch)
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '''
+[chatgpt]
+base_url = "https://from-config.example/"
+
+[browser]
+viewport_width = 1000
+viewport_height = 700
+
+[timeouts]
+navigation_ms = 40000
+composer_ready_ms = 20000
+'''
+    )
+
+    monkeypatch.setenv(
+        "CHATGPT_WEB_CHATGPT_BASE_URL",
+        "https://from-env.example/path/",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_VIEWPORT_WIDTH",
+        "1600",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_VIEWPORT_HEIGHT",
+        "1000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_NAVIGATION_TIMEOUT_MS",
+        "65000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_COMPOSER_READY_TIMEOUT_MS",
+        "35000",
+    )
+
+    settings = Settings.from_env(config)
+
+    assert settings.chatgpt_base_url == (
+        "https://from-env.example/path/"
+    )
+    assert settings.chatgpt_origin == (
+        "https://from-env.example"
+    )
+    assert settings.viewport_width == 1600
+    assert settings.viewport_height == 1000
+    assert settings.navigation_timeout_ms == 65000
+    assert settings.composer_ready_timeout_ms == 35000
