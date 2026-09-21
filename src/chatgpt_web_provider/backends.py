@@ -1233,8 +1233,8 @@ class BrowserBackend(Backend):
         prompt_parts = [
             part
             for part in (
-                host_bridge_text,
                 message_text,
+                host_bridge_text,
                 tool_reminder_text,
                 tool_catalog_text,
             )

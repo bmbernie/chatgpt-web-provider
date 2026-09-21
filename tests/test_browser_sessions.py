@@ -961,7 +961,7 @@ def test_browser_host_bridge_context_for_developer_messages():
     assert "reasoning backend for a Hermes Agent host" in bridge
     assert "not the native ChatGPT web UI" in bridge
     assert "external tool catalog" in bridge
-    assert "authoritative for host-tool availability" in bridge
+    assert "authoritative tool set for this request" in bridge
 
     user_only = [
         ChatMessage(
@@ -1804,3 +1804,60 @@ def test_browser_login_state_check_detects_logged_out_profile():
             )
 
     asyncio.run(run())
+
+
+def test_browser_prompt_places_host_bridge_after_developer_context():
+    backend = BrowserBackend(settings())
+
+    messages = [
+        ChatMessage(
+            role="developer",
+            content="You are Hermes Agent.",
+        ),
+        ChatMessage(
+            role="user",
+            content="Call live_probe.",
+        ),
+    ]
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "live_probe",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        }
+    ]
+
+    prompt = backend._build_browser_prompt(
+        messages,
+        tools=tools,
+        tool_catalog_prompt="LIVE TOOL CATALOG",
+    )
+
+    developer_pos = prompt.index(
+        "DEVELOPER: You are Hermes Agent."
+    )
+
+    bridge_pos = prompt.index(
+        "HOST BRIDGE CONTEXT:"
+    )
+
+    reminder_pos = prompt.index(
+        "EXTERNAL TOOL REMINDER:"
+    )
+
+    catalog_pos = prompt.index(
+        "LIVE TOOL CATALOG"
+    )
+
+    assert (
+        developer_pos
+        < bridge_pos
+        < reminder_pos
+        < catalog_pos
+    )

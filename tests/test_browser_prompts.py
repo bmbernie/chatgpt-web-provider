@@ -48,3 +48,25 @@ def test_render_transcript_preserves_external_tool_labels():
         + "five workers"
         in rendered
     )
+
+
+def test_host_bridge_disambiguates_external_from_native_tools():
+    from chatgpt_web_provider.browser_prompts import (
+        render_host_bridge_context,
+    )
+
+    messages = [
+        ChatMessage(
+            role="developer",
+            content="You are Hermes Agent.",
+        ),
+    ]
+
+    bridge = render_host_bridge_context(messages)
+
+    assert "NOT native ChatGPT tools" in bridge
+    assert "not expected to appear in the native ChatGPT tool set" in bridge
+    assert "Do not use the native ChatGPT tool set" in bridge
+    assert "authoritative tool set for this request" in bridge
+    assert "emit the exact external tool-call envelope" in bridge
+    assert "provider will intercept that envelope" in bridge
