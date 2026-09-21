@@ -208,6 +208,17 @@ class MockBackend(Backend):
         return CompletionResult(text=text, model=model or self.settings.model_id, level=level, prompt_tokens=sum(len(m.text().split()) for m in messages), completion_tokens=len(text.split()))
 
 
+@dataclass(slots=True)
+class _BrowserTurnResult:
+    text: str
+    input_method: str
+    composer_wait_ms: float
+    input_ms: float
+    submit_ms: float
+    generation_ms: float
+    extraction_ms: float
+
+
 class BrowserBackend(Backend):
     """Browser-backed ChatGPT.com worker.
 
@@ -1057,6 +1068,150 @@ class BrowserBackend(Backend):
     async def _close_pinned_session_page(page) -> None:
         await page.close()
 
+    async def _execute_browser_turn(
+        self,
+        page,
+        prompt: str,
+    ) -> _BrowserTurnResult:
+        """Execute one prompt/response exchange on an existing browser page."""
+        phase = "composer"
+
+        try:
+            await self._raise_if_ui_rate_limited(
+                page,
+                phase="composer",
+            )
+
+            phase = "composer_wait"
+            composer = page.locator(COMPOSER).last
+
+            phase_started = time.perf_counter()
+
+            await composer.wait_for(
+                timeout=self.settings.composer_ready_timeout_ms
+            )
+
+            composer_wait_ms = (
+                time.perf_counter()
+                - phase_started
+            ) * 1000
+
+            phase = "composer_fill"
+
+            await self._raise_if_ui_rate_limited(
+                page,
+                phase="composer_fill",
+            )
+
+            input_method = (
+                "clipboard_chunked_paste"
+                if len(prompt)
+                >= self.settings.inline_fill_max_chars
+                else "fill"
+            )
+
+            logger.info(
+                "browser_composer_input_start "
+                "method=%s prompt_chars=%d",
+                input_method,
+                len(prompt),
+            )
+
+            phase = "composer_input"
+            phase_started = time.perf_counter()
+
+            try:
+                input_method = await self._write_composer_text(
+                    page,
+                    composer,
+                    prompt,
+                    inline_fill_max_chars=(
+                        self.settings.inline_fill_max_chars
+                    ),
+                    clipboard_chunk_size=(
+                        self.settings.clipboard_chunk_size
+                    ),
+                    clipboard_origin=self.settings.chatgpt_origin,
+                )
+
+            except Exception as exc:
+                await self._raise_if_ui_rate_limited(
+                    page,
+                    phase="composer_input",
+                )
+
+                raise RuntimeError(
+                    "ChatGPT composer input failed "
+                    f"({type(exc).__name__})"
+                ) from None
+
+            input_ms = (
+                time.perf_counter()
+                - phase_started
+            ) * 1000
+
+            logger.info(
+                "browser_composer_input_complete "
+                "method=%s prompt_chars=%d",
+                input_method,
+                len(prompt),
+            )
+
+            phase = "submit"
+            phase_started = time.perf_counter()
+
+            await self._submit_prompt(
+                page,
+                composer,
+            )
+
+            submit_ms = (
+                time.perf_counter()
+                - phase_started
+            ) * 1000
+
+            phase = "generation"
+            phase_started = time.perf_counter()
+
+            await self._wait_until_idle(page)
+
+            generation_ms = (
+                time.perf_counter()
+                - phase_started
+            ) * 1000
+
+            phase = "extraction"
+            phase_started = time.perf_counter()
+
+            response_text = await self._extract_last_answer(
+                page
+            )
+
+            extraction_ms = (
+                time.perf_counter()
+                - phase_started
+            ) * 1000
+
+            return _BrowserTurnResult(
+                text=response_text,
+                input_method=input_method,
+                composer_wait_ms=composer_wait_ms,
+                input_ms=input_ms,
+                submit_ms=submit_ms,
+                generation_ms=generation_ms,
+                extraction_ms=extraction_ms,
+            )
+
+        except Exception as exc:
+            logger.error(
+                "browser_turn_failed "
+                "stage=%s error_type=%s prompt_chars=%d",
+                phase,
+                type(exc).__name__,
+                len(prompt),
+            )
+            raise
+
     async def _complete_pinned_session(
         self,
         session: _BrowserSession,
@@ -1142,71 +1297,12 @@ class BrowserBackend(Backend):
                 "ChatGPT browser profile is not logged in"
             )
 
-        await self._raise_if_ui_rate_limited(
+        turn = await self._execute_browser_turn(
             page,
-            phase="composer",
+            prompt,
         )
 
-        composer = page.locator(
-            COMPOSER
-        ).last
-
-        await composer.wait_for(
-            timeout=self.settings.composer_ready_timeout_ms
-        )
-
-        await self._raise_if_ui_rate_limited(
-            page,
-            phase="composer_fill",
-        )
-
-        input_method = (
-            "clipboard_chunked_paste"
-            if len(prompt) >= self.settings.inline_fill_max_chars
-            else "fill"
-        )
-
-        logger.info(
-            "browser_composer_input_start "
-            "method=%s prompt_chars=%d",
-            input_method,
-            len(prompt),
-        )
-
-        try:
-            input_method = await self._write_composer_text(
-                page,
-                composer,
-                prompt,
-                inline_fill_max_chars=(
-                    self.settings.inline_fill_max_chars
-                ),
-                clipboard_chunk_size=(
-                    self.settings.clipboard_chunk_size
-                ),
-                clipboard_origin=self.settings.chatgpt_origin,
-            )
-        except Exception as exc:
-            await self._raise_if_ui_rate_limited(
-                page,
-                phase="composer_input",
-            )
-
-            raise RuntimeError(
-                f"ChatGPT composer input failed "
-                f"({type(exc).__name__})"
-            ) from None
-
-        logger.info(
-            "browser_composer_input_complete "
-            "method=%s prompt_chars=%d",
-            input_method,
-            len(prompt),
-        )
-
-        await self._submit_prompt(page, composer)
-        await self._wait_until_idle(page)
-        response_text = await self._extract_last_answer(page)
+        response_text = turn.text
 
         logger.info(
             "browser_session_request_complete session_id=%s "
@@ -1295,42 +1391,19 @@ class BrowserBackend(Backend):
                 await self._apply_preferences(page, selected_model, level)
                 preferences_ms = (time.perf_counter() - phase_started) * 1000
 
-                phase = "composer_wait"
-                composer = page.locator(
-                    COMPOSER
-                ).last
-                phase_started = time.perf_counter()
-                await composer.wait_for(
-            timeout=self.settings.composer_ready_timeout_ms
-        )
-                composer_wait_ms = (time.perf_counter() - phase_started) * 1000
+                phase = "browser_turn"
 
-                phase = "fill"
-                phase_started = time.perf_counter()
-                try:
-                    await composer.fill(prompt)
-                except Exception as exc:
-                    # Playwright includes the fill() value in its call log.
-                    # Convert the exception here so prompts never reach journald.
-                    raise RuntimeError(
-                        f"ChatGPT composer fill failed ({type(exc).__name__})"
-                    ) from None
-                fill_ms = (time.perf_counter() - phase_started) * 1000
+                turn = await self._execute_browser_turn(
+                    page,
+                    prompt,
+                )
 
-                phase = "submit"
-                phase_started = time.perf_counter()
-                await self._submit_prompt(page, composer)
-                submit_ms = (time.perf_counter() - phase_started) * 1000
-
-                phase = "generation"
-                phase_started = time.perf_counter()
-                await self._wait_until_idle(page)
-                generation_ms = (time.perf_counter() - phase_started) * 1000
-
-                phase = "extraction"
-                phase_started = time.perf_counter()
-                text = await self._extract_last_answer(page)
-                extraction_ms = (time.perf_counter() - phase_started) * 1000
+                composer_wait_ms = turn.composer_wait_ms
+                fill_ms = turn.input_ms
+                submit_ms = turn.submit_ms
+                generation_ms = turn.generation_ms
+                extraction_ms = turn.extraction_ms
+                text = turn.text
 
                 total_ms = (time.perf_counter() - total_started) * 1000
 

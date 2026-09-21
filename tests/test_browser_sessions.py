@@ -967,3 +967,94 @@ def test_browser_host_bridge_context_for_developer_messages():
         BrowserBackend._browser_host_bridge_context([])
         == ""
     )
+
+
+def test_browser_complete_uses_shared_turn_executor():
+    from types import SimpleNamespace
+
+    class FakePage:
+        async def title(self):
+            return "ChatGPT"
+
+    class SharedTurnBackend(BrowserBackend):
+        def __init__(self, provider_settings):
+            super().__init__(provider_settings)
+            self.page = FakePage()
+            self.reset_pages = []
+            self.preferences = []
+            self.turns = []
+
+        async def _ensure_page(self):
+            return self.page
+
+        async def _start_new_session(self, page):
+            self.reset_pages.append(page)
+
+        async def _apply_preferences(
+            self,
+            page,
+            model,
+            level,
+        ):
+            self.preferences.append(
+                (page, model, level)
+            )
+
+        async def _execute_browser_turn(
+            self,
+            page,
+            prompt,
+        ):
+            self.turns.append(
+                (page, prompt)
+            )
+
+            return SimpleNamespace(
+                text="shared turn result",
+                input_method="fill",
+                composer_wait_ms=1.0,
+                input_ms=2.0,
+                submit_ms=3.0,
+                generation_ms=4.0,
+                extraction_ms=5.0,
+            )
+
+    async def run():
+        backend = SharedTurnBackend(settings())
+
+        result = await backend.complete(
+            [
+                ChatMessage(
+                    role="user",
+                    content="shared turn probe",
+                )
+            ],
+            model="gpt-a",
+            new_session=True,
+            level="high",
+        )
+
+        assert backend.reset_pages == [
+            backend.page,
+        ]
+
+        assert backend.preferences == [
+            (
+                backend.page,
+                "gpt-a",
+                "high",
+            )
+        ]
+
+        assert len(backend.turns) == 1
+
+        page, prompt = backend.turns[0]
+
+        assert page is backend.page
+        assert "shared turn probe" in prompt
+
+        assert result.text == "shared turn result"
+        assert result.model == "gpt-a"
+        assert result.level == "high"
+
+    asyncio.run(run())
