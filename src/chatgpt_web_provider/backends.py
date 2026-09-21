@@ -10,6 +10,43 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .chatgpt_ui import (
+    ASSISTANT_MESSAGES,
+    BODY,
+    COMPOSER,
+    CONTROL_ANCESTOR_MAX_DEPTH,
+    CONTROL_TEXT_PROBE_MS,
+    CONTROL_VISIBLE_PROBE_MS,
+    INTELLIGENCE_PICKER_CONTENT,
+    MODEL_OPTIONS,
+    MODEL_PICKER_ADVANCED_VIEW,
+    MODEL_PICKER_SIMPLE_VIEW,
+    NEW_CHAT_SELECTORS,
+    OPTION_TEXT_PROBE_MS,
+    OPTION_VISIBLE_PROBE_MS,
+    PARENT_XPATH,
+    PERSONALIZATION_OPTION,
+    PICKER_OPEN_PROBE_MS,
+    PICKER_STATE_TEXT_TIMEOUT_MS,
+    PICKER_TEXT_TIMEOUT_MS,
+    RATE_LIMIT_MODAL,
+    REASONING_CONTROLS,
+    REASONING_SLIDER_SELECTORS,
+    SELECT_MODEL_MENUITEM,
+    SEND_BUTTON_CANDIDATE_LIMIT,
+    SEND_BUTTON_PROBE_MS,
+    SEND_BUTTON_SELECTORS,
+    STATE_POLL_MS,
+    STOP_BUTTON,
+    SUBMIT_COMPOSER_PROBE_MS,
+    SUBMIT_POLL_MS,
+    SUBMIT_STOP_PROBE_MS,
+    TEMPORARY_CHAT_ENABLED,
+    TEMPORARY_CHAT_TOGGLE,
+    TRANSITION_SETTLE_MS,
+    UI_CANDIDATE_LIMIT,
+    aria_label_button,
+)
 from .models import ChatMessage, CompletionResult
 from .tool_bridge import (
     parse_tool_calls,
@@ -204,7 +241,7 @@ class BrowserBackend(Backend):
     ) -> None:
         try:
             modal = page.locator(
-                '[data-testid="modal-conversation-history-rate-limit"]'
+                RATE_LIMIT_MODAL
             )
             visible = await modal.is_visible()
         except Exception:
@@ -866,14 +903,14 @@ class BrowserBackend(Backend):
     ) -> None:
         """Enable Temporary Chat and verify the UI entered that mode."""
         enabled = page.locator(
-            'button[aria-label="Turn off temporary chat"]'
+            TEMPORARY_CHAT_ENABLED
         )
 
         if await enabled.is_visible():
             return
 
         toggle = page.locator(
-            'button[aria-label="Temporary chat"]'
+            TEMPORARY_CHAT_TOGGLE
         )
 
         await toggle.wait_for(
@@ -908,7 +945,7 @@ class BrowserBackend(Backend):
     ) -> None:
         """Pin Temporary Chat to Personalized or Unpersonalized."""
         desired_button = page.locator(
-            f'button[aria-label="{desired}"]'
+            aria_label_button(desired)
         )
 
         if await desired_button.is_visible():
@@ -921,7 +958,7 @@ class BrowserBackend(Backend):
         )
 
         launcher = page.locator(
-            f'button[aria-label="{other}"]'
+            aria_label_button(other)
         )
 
         await launcher.wait_for(
@@ -943,7 +980,7 @@ class BrowserBackend(Backend):
             raise
 
         option = page.locator(
-            '[role="menuitemradio"]'
+            PERSONALIZATION_OPTION
         ).filter(
             has=page.get_by_text(
                 desired,
@@ -1111,7 +1148,7 @@ class BrowserBackend(Backend):
         )
 
         composer = page.locator(
-            "#prompt-textarea, div[contenteditable='true']"
+            COMPOSER
         ).last
 
         await composer.wait_for(
@@ -1260,7 +1297,7 @@ class BrowserBackend(Backend):
 
                 phase = "composer_wait"
                 composer = page.locator(
-                    "#prompt-textarea, div[contenteditable='true']"
+                    COMPOSER
                 ).last
                 phase_started = time.perf_counter()
                 await composer.wait_for(
@@ -1394,7 +1431,7 @@ class BrowserBackend(Backend):
         }
 
         composer = page.locator(
-            "#prompt-textarea, div[contenteditable='true']"
+            COMPOSER
         ).last
 
         await composer.wait_for(
@@ -1407,13 +1444,13 @@ class BrowserBackend(Backend):
         while time.monotonic() < deadline:
             container = composer
 
-            for depth in range(1, 9):
+            for depth in range(1, CONTROL_ANCESTOR_MAX_DEPTH + 1):
                 try:
-                    container = container.locator("xpath=..")
+                    container = container.locator(PARENT_XPATH)
                     controls = container.locator(
-                        "[aria-haspopup='menu']"
+                        REASONING_CONTROLS
                     )
-                    count = min(await controls.count(), 20)
+                    count = min(await controls.count(), UI_CANDIDATE_LIMIT)
                 except Exception:
                     break
 
@@ -1421,11 +1458,11 @@ class BrowserBackend(Backend):
                     control = controls.nth(index)
 
                     try:
-                        if not await control.is_visible(timeout=100):
+                        if not await control.is_visible(timeout=CONTROL_VISIBLE_PROBE_MS):
                             continue
 
                         raw_text = (
-                            await control.inner_text(timeout=200)
+                            await control.inner_text(timeout=CONTROL_TEXT_PROBE_MS)
                         ).strip()
                     except Exception:
                         continue
@@ -1447,7 +1484,7 @@ class BrowserBackend(Backend):
 
                     return control, raw_text
 
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(TRANSITION_SETTLE_MS)
 
         raise RuntimeError(
             "ChatGPT reasoning picker did not become ready "
@@ -1464,7 +1501,7 @@ class BrowserBackend(Backend):
         )
 
         content = page.locator(
-            "[data-testid='composer-intelligence-picker-content']"
+            INTELLIGENCE_PICKER_CONTENT
         ).last
 
         await content.wait_for(
@@ -1480,7 +1517,7 @@ class BrowserBackend(Backend):
         target_label: str,
     ):
         advanced = content.locator(
-            "[data-testid='composer-model-picker-slider-advanced-view']"
+            MODEL_PICKER_ADVANCED_VIEW
         ).last
 
         await advanced.wait_for(
@@ -1489,10 +1526,10 @@ class BrowserBackend(Backend):
         )
 
         options = advanced.locator(
-            "[role='menuitemradio']"
+            MODEL_OPTIONS
         )
 
-        count = min(await options.count(), 20)
+        count = min(await options.count(), UI_CANDIDATE_LIMIT)
         target = self._normalize_preference_text(
             target_label
         )
@@ -1501,11 +1538,11 @@ class BrowserBackend(Backend):
             option = options.nth(index)
 
             try:
-                if not await option.is_visible(timeout=150):
+                if not await option.is_visible(timeout=OPTION_VISIBLE_PROBE_MS):
                     continue
 
                 raw_text = (
-                    await option.inner_text(timeout=250)
+                    await option.inner_text(timeout=OPTION_TEXT_PROBE_MS)
                 ).strip()
             except Exception:
                 continue
@@ -1534,11 +1571,11 @@ class BrowserBackend(Backend):
     ):
         """Switch the intelligence picker from reasoning to model view."""
         simple = content.locator(
-            "[data-testid='composer-model-picker-slider-simple-view']"
+            MODEL_PICKER_SIMPLE_VIEW
         ).last
 
         advanced = content.locator(
-            "[data-testid='composer-model-picker-slider-advanced-view']"
+            MODEL_PICKER_ADVANCED_VIEW
         ).last
 
         # The advanced panel exists in the DOM even when the simple panel
@@ -1550,7 +1587,7 @@ class BrowserBackend(Backend):
             pass
 
         select_model = content.locator(
-            "[role='menuitem'][aria-label='Select model']"
+            SELECT_MODEL_MENUITEM
         ).last
 
         await select_model.wait_for(
@@ -1584,7 +1621,7 @@ class BrowserBackend(Backend):
                 ):
                     # Give the transition a short period to settle before
                     # asking Playwright to perform a pointer action.
-                    await page.wait_for_timeout(200)
+                    await page.wait_for_timeout(TRANSITION_SETTLE_MS)
 
                     logger.info(
                         "model_view_activate_complete "
@@ -1598,7 +1635,7 @@ class BrowserBackend(Backend):
             except Exception:
                 pass
 
-            await page.wait_for_timeout(100)
+            await page.wait_for_timeout(STATE_POLL_MS)
 
         raise RuntimeError(
             "ChatGPT model picker did not switch to advanced view"
@@ -1673,7 +1710,7 @@ class BrowserBackend(Backend):
                     )
                     break
 
-                await page.wait_for_timeout(100)
+                await page.wait_for_timeout(STATE_POLL_MS)
             else:
                 raise RuntimeError(
                     f"model selection was not verified: "
@@ -1681,7 +1718,7 @@ class BrowserBackend(Backend):
                 )
 
         simple = content.locator(
-            "[data-testid='composer-model-picker-slider-simple-view']"
+            MODEL_PICKER_SIMPLE_VIEW
         ).last
 
         # Selecting a model often transitions back to simple view itself.
@@ -1713,7 +1750,7 @@ class BrowserBackend(Backend):
                 except Exception:
                     pass
 
-            await page.wait_for_timeout(100)
+            await page.wait_for_timeout(STATE_POLL_MS)
 
         raise RuntimeError(
             "model selection succeeded but reasoning view "
@@ -1729,12 +1766,12 @@ class BrowserBackend(Backend):
         target_label = self.settings.level_label(level)
 
         picker = page.locator(
-            "[data-testid='composer-intelligence-picker-content']"
+            INTELLIGENCE_PICKER_CONTENT
         ).last
 
         # Normal path: _select_model() deliberately left this open.
         try:
-            picker_open = await picker.is_visible(timeout=500)
+            picker_open = await picker.is_visible(timeout=PICKER_OPEN_PROBE_MS)
         except Exception:
             picker_open = False
 
@@ -1745,7 +1782,7 @@ class BrowserBackend(Backend):
             )
 
         simple = picker.locator(
-            "[data-testid='composer-model-picker-slider-simple-view']"
+            MODEL_PICKER_SIMPLE_VIEW
         ).last
 
         await simple.wait_for(
@@ -1773,7 +1810,7 @@ class BrowserBackend(Backend):
                 ):
                     break
 
-                await page.wait_for_timeout(100)
+                await page.wait_for_timeout(STATE_POLL_MS)
             else:
                 raise RuntimeError(
                     "reasoning simple view did not become active"
@@ -1824,7 +1861,7 @@ class BrowserBackend(Backend):
             return None
 
         simple_text = (
-            await simple.inner_text(timeout=1000)
+            await simple.inner_text(timeout=PICKER_TEXT_TIMEOUT_MS)
         ).strip()
 
         current = level_from_text(simple_text)
@@ -1879,20 +1916,15 @@ class BrowserBackend(Backend):
         slider = None
         slider_selector = None
 
-        for selector in (
-            "[role='slider']",
-            "[aria-valuenow]",
-            "[aria-valuetext]",
-            "[tabindex='0']:not([aria-label='Select model'])",
-        ):
+        for selector in REASONING_SLIDER_SELECTORS:
             try:
                 candidates = simple.locator(selector)
-                count = min(await candidates.count(), 20)
+                count = min(await candidates.count(), UI_CANDIDATE_LIMIT)
 
                 for index in range(count):
                     candidate = candidates.nth(index)
 
-                    if await candidate.is_visible(timeout=100):
+                    if await candidate.is_visible(timeout=CONTROL_VISIBLE_PROBE_MS):
                         slider = candidate
                         slider_selector = selector
                         break
@@ -1961,7 +1993,7 @@ class BrowserBackend(Backend):
         while time.monotonic() < deadline:
             try:
                 last_text = (
-                    await simple.inner_text(timeout=500)
+                    await simple.inner_text(timeout=PICKER_STATE_TEXT_TIMEOUT_MS)
                 ).strip()
 
                 observed = level_from_text(last_text)
@@ -1984,7 +2016,7 @@ class BrowserBackend(Backend):
             except Exception:
                 pass
 
-            await page.wait_for_timeout(100)
+            await page.wait_for_timeout(STATE_POLL_MS)
 
         raise RuntimeError(
             "reasoning-level slider did not reach target: "
@@ -2079,12 +2111,7 @@ class BrowserBackend(Backend):
         Send actionable. Waiting here prevents a race where an Enter keypress
         is ignored and the request appears to hang.
         """
-        selectors = (
-            "button[data-testid='send-button']",
-            "button[aria-label='Send prompt']",
-            "button[aria-label='Send message']",
-            "button[aria-label='Send']",
-        )
+        selectors = SEND_BUTTON_SELECTORS
 
         submit_ready_seconds = (
             self.settings.submit_ready_timeout_ms
@@ -2102,15 +2129,15 @@ class BrowserBackend(Backend):
             for selector in selectors:
                 try:
                     buttons = page.locator(selector)
-                    count = min(await buttons.count(), 4)
+                    count = min(await buttons.count(), SEND_BUTTON_CANDIDATE_LIMIT)
 
                     for index in range(count):
                         button = buttons.nth(index)
 
-                        if not await button.is_visible(timeout=250):
+                        if not await button.is_visible(timeout=SEND_BUTTON_PROBE_MS):
                             continue
 
-                        if await button.is_enabled(timeout=250):
+                        if await button.is_enabled(timeout=SEND_BUTTON_PROBE_MS):
                             send_button = button
                             break
 
@@ -2123,7 +2150,7 @@ class BrowserBackend(Backend):
             if send_button is not None:
                 break
 
-            await page.wait_for_timeout(250)
+            await page.wait_for_timeout(SEND_BUTTON_PROBE_MS)
 
         if send_button is None:
             raise RuntimeError(
@@ -2137,7 +2164,7 @@ class BrowserBackend(Backend):
 
         # Confirm that the click actually submitted the prompt.
         stop = page.locator(
-            "button[aria-label*='Stop'], button[data-testid*='stop']"
+            STOP_BUTTON
         )
 
         confirm_deadline = (
@@ -2149,14 +2176,14 @@ class BrowserBackend(Backend):
             try:
                 stop_count = await stop.count()
                 for index in range(stop_count):
-                    if await stop.nth(index).is_visible(timeout=200):
+                    if await stop.nth(index).is_visible(timeout=SUBMIT_STOP_PROBE_MS):
                         return
             except Exception:
                 pass
 
             try:
                 remaining = (
-                    await composer.inner_text(timeout=500)
+                    await composer.inner_text(timeout=SUBMIT_COMPOSER_PROBE_MS)
                 ).strip()
 
                 if not remaining:
@@ -2165,7 +2192,7 @@ class BrowserBackend(Backend):
                 # Composer replacement/removal also indicates submission.
                 return
 
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(SUBMIT_POLL_MS)
 
         raise RuntimeError(
             "ChatGPT Send button was clicked but submission was not confirmed"
@@ -2173,8 +2200,7 @@ class BrowserBackend(Backend):
 
     async def _wait_until_idle(self, page) -> None:  # pragma: no cover - browser integration
         stop = page.locator(
-            "button[aria-label*='Stop'], "
-            "button[data-testid*='stop']"
+            STOP_BUTTON
         )
 
         deadline = (
@@ -2216,18 +2242,13 @@ class BrowserBackend(Backend):
 
         if (
             await page.locator(
-                "#prompt-textarea, div[contenteditable='true']"
+                COMPOSER
             ).count()
             > 0
         ):
             return
 
-        for selector in (
-            "[data-testid='create-new-chat-button']",
-            "button[aria-label*='New chat']",
-            "a[aria-label*='New chat']",
-            "a[href='/']",
-        ):
+        for selector in NEW_CHAT_SELECTORS:
             candidate = page.locator(selector).first
 
             try:
@@ -2249,13 +2270,13 @@ class BrowserBackend(Backend):
 
     async def _extract_last_answer(self, page) -> str:  # pragma: no cover - browser integration
         candidates = page.locator(
-            "[data-message-author-role='assistant']"
+            ASSISTANT_MESSAGES
         )
 
         count = await candidates.count()
 
         if count == 0:
-            body = await page.locator("body").inner_text(
+            body = await page.locator(BODY).inner_text(
                 timeout=self.settings.extraction_timeout_ms
             )
 
