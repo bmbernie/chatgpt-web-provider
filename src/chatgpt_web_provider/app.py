@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import (
     Backend,
+    ChatGPTBrowserOperationError,
     ChatGPTBrowserStateError,
     ChatGPTGenerationTimeoutError,
     ChatGPTUIRateLimitError,
@@ -244,6 +245,24 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     )
     app.state.settings = settings
     app.state.backend = backend
+
+    @app.exception_handler(ChatGPTBrowserOperationError)
+    async def chatgpt_browser_operation_error(
+        _: Request,
+        exc: ChatGPTBrowserOperationError,
+    ):
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "message": "ChatGPT browser operation failed",
+                    "type": "browser_operation_error",
+                    "code": "chatgpt_browser_operation_failed",
+                    "phase": exc.phase,
+                    "operation": exc.operation,
+                }
+            },
+        )
 
     @app.exception_handler(ChatGPTBrowserStateError)
     async def chatgpt_browser_state_error(

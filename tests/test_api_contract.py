@@ -1189,3 +1189,60 @@ def test_public_health_does_not_expose_backend_diagnostics():
     assert data["ok"] is False
     assert data["error"] == "browser backend unavailable"
     assert "title" not in data
+
+
+def test_browser_operation_error_maps_to_http_502():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserOperationError,
+        MockBackend,
+    )
+
+    class BrowserOperationBackend(MockBackend):
+        async def complete(
+            self,
+            messages,
+            model=None,
+            new_session=False,
+            level=None,
+        ):
+            raise ChatGPTBrowserOperationError(
+                phase="submit",
+                operation="send_button_ready",
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=BrowserOperationBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": settings.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 502
+
+    error = response.json()["error"]
+
+    assert error["type"] == "browser_operation_error"
+    assert error["code"] == "chatgpt_browser_operation_failed"
+    assert error["phase"] == "submit"
+    assert error["operation"] == "send_button_ready"

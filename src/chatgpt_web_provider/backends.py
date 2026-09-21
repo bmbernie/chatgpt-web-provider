@@ -81,6 +81,23 @@ class ChatGPTUIRateLimitError(RuntimeError):
         )
 
 
+class ChatGPTBrowserOperationError(RuntimeError):
+    """A required ChatGPT Web UI operation could not be completed."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        operation: str,
+    ):
+        self.phase = phase
+        self.operation = operation
+
+        super().__init__(
+            "ChatGPT browser operation failed"
+        )
+
+
 class ChatGPTBrowserStateError(RuntimeError):
     """Browser/UI state could not be inspected reliably."""
 
@@ -1099,7 +1116,10 @@ class BrowserBackend(Backend):
         await self._ensure_page()
 
         if self._context is None:
-            raise RuntimeError("browser context is unavailable")
+            raise ChatGPTBrowserStateError(
+                phase='session_create',
+                operation='browser_context_available',
+            )
 
         page = await self._context.new_page()
 
@@ -1276,9 +1296,9 @@ class BrowserBackend(Backend):
                     phase="composer_input",
                 )
 
-                raise RuntimeError(
-                    "ChatGPT composer input failed "
-                    f"({type(exc).__name__})"
+                raise ChatGPTBrowserOperationError(
+                    phase='composer_input',
+                    operation='composer_write',
                 ) from None
 
             input_ms = (
@@ -1763,9 +1783,9 @@ class BrowserBackend(Backend):
 
             await page.wait_for_timeout(TRANSITION_SETTLE_MS)
 
-        raise RuntimeError(
-            "ChatGPT reasoning picker did not become ready "
-            f"within {timeout_seconds:.0f} seconds"
+        raise ChatGPTBrowserOperationError(
+            phase='preferences',
+            operation='reasoning_picker_ready',
         )
 
     async def _open_intelligence_picker(self, page):
@@ -1914,8 +1934,9 @@ class BrowserBackend(Backend):
 
             await page.wait_for_timeout(STATE_POLL_MS)
 
-        raise RuntimeError(
-            "ChatGPT model picker did not switch to advanced view"
+        raise ChatGPTBrowserOperationError(
+            phase='preferences',
+            operation='model_picker_advanced_view',
         )
 
     async def _select_model(
@@ -1941,8 +1962,9 @@ class BrowserBackend(Backend):
         )
 
         if option is None:
-            raise RuntimeError(
-                f"could not find model option: {target_label}"
+            raise ChatGPTBrowserOperationError(
+                phase='preferences',
+                operation='model_option_lookup',
             )
 
         async def option_checked() -> bool:
@@ -1989,9 +2011,9 @@ class BrowserBackend(Backend):
 
                 await page.wait_for_timeout(STATE_POLL_MS)
             else:
-                raise RuntimeError(
-                    f"model selection was not verified: "
-                    f"{target_label}"
+                raise ChatGPTBrowserOperationError(
+                    phase='preferences',
+                    operation='model_selection_verify',
                 )
 
         simple = content.locator(
@@ -2029,9 +2051,9 @@ class BrowserBackend(Backend):
 
             await page.wait_for_timeout(STATE_POLL_MS)
 
-        raise RuntimeError(
-            "model selection succeeded but reasoning view "
-            "did not become active"
+        raise ChatGPTBrowserOperationError(
+            phase='preferences',
+            operation='reasoning_view_activate',
         )
 
     async def _select_reasoning_level(
@@ -2089,8 +2111,9 @@ class BrowserBackend(Backend):
 
                 await page.wait_for_timeout(STATE_POLL_MS)
             else:
-                raise RuntimeError(
-                    "reasoning simple view did not become active"
+                raise ChatGPTBrowserOperationError(
+                    phase='preferences',
+                    operation='reasoning_simple_view_activate',
                 )
 
         def level_from_text(value: str):
@@ -2144,9 +2167,9 @@ class BrowserBackend(Backend):
         current = level_from_text(simple_text)
 
         if current is None:
-            raise RuntimeError(
-                "could not determine current reasoning level: "
-                f"{simple_text!r}"
+            raise ChatGPTBrowserOperationError(
+                phase='preferences',
+                operation='reasoning_level_detect',
             )
 
         current_level, current_label = current
@@ -2295,10 +2318,9 @@ class BrowserBackend(Backend):
 
             await page.wait_for_timeout(STATE_POLL_MS)
 
-        raise RuntimeError(
-            "reasoning-level slider did not reach target: "
-            f"expected={target_label!r} "
-            f"observed_text={last_text!r}"
+        raise ChatGPTBrowserOperationError(
+            phase='preferences',
+            operation='reasoning_level_select',
         )
 
     @staticmethod
@@ -2413,9 +2435,9 @@ class BrowserBackend(Backend):
             await page.wait_for_timeout(SEND_BUTTON_PROBE_MS)
 
         if send_button is None:
-            raise RuntimeError(
-                "ChatGPT Send button did not become enabled within "
-                f"{submit_ready_seconds:g} seconds"
+            raise ChatGPTBrowserOperationError(
+                phase='submit',
+                operation='send_button_ready',
             )
 
         await send_button.click(
@@ -2466,8 +2488,9 @@ class BrowserBackend(Backend):
 
             await page.wait_for_timeout(SUBMIT_POLL_MS)
 
-        raise RuntimeError(
-            "ChatGPT Send button was clicked but submission was not confirmed"
+        raise ChatGPTBrowserOperationError(
+            phase='submit_confirm',
+            operation='submission_confirm',
         )
 
     async def _wait_until_idle(self, page) -> None:  # pragma: no cover - browser integration

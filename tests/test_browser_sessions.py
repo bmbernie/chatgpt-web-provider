@@ -1734,3 +1734,37 @@ def test_browser_health_does_not_expose_exception_text():
         assert "secret-value" not in rendered
 
     asyncio.run(run())
+
+
+def test_submit_ready_timeout_is_browser_operation_error():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserOperationError,
+    )
+
+    async def run():
+        provider_settings = settings()
+
+        # Force the readiness loop to expire before probing the page.
+        provider_settings.submit_ready_timeout_ms = 0
+
+        backend = BrowserBackend(
+            provider_settings
+        )
+
+        try:
+            await backend._submit_prompt(
+                object(),
+                object(),
+            )
+
+        except ChatGPTBrowserOperationError as exc:
+            assert exc.phase == "submit"
+            assert exc.operation == "send_button_ready"
+
+        else:
+            raise AssertionError(
+                "send-button readiness failure "
+                "was not typed as a browser operation"
+            )
+
+    asyncio.run(run())
