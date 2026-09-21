@@ -1,0 +1,64 @@
+# Non-secret ChatGPT Web Provider configuration.
+# Environment variables override values in this file.
+# API keys intentionally remain environment-only.
+
+[provider]
+backend = "browser"
+
+[chatgpt]
+model = "chatgpt-5.6-sol-web"
+models = [
+  "chatgpt-5.6-sol-web",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3",
+  "gpt-5.3-codex-spark",
+  "o3",
+]
+
+model_labels = {
+  "chatgpt-5.6-sol-web" = "GPT-5.6 Sol",
+  "gpt-5.6-terra" = "5.6 Terra",
+  "gpt-5.6-luna" = "5.6 Luna",
+  "gpt-5.5" = "GPT-5.5",
+  "gpt-5.4" = "GPT-5.4",
+  "gpt-5.4-mini" = "5.4 Mini",
+  "gpt-5.3" = "GPT-5.3",
+  "gpt-5.3-codex-spark" = "5.3 Codex Spark",
+  "o3" = "o3",
+}
+
+levels = ["auto", "fast", "standard", "high"]
+level_labels = {
+  auto = "Auto",
+  fast = "Fast",
+  standard = "Standard",
+  high = "High",
+}
+
+session_policy = "regular"
+
+[server]
+host = "127.0.0.1"
+port = 8791
+public_base_url = "http://127.0.0.1:8791"
+
+[browser]
+profile_dir = "~/.local/share/chatgpt-web-provider/chrome-profile"
+headless = true
+channel = ""
+enable_extensions = false
+
+[timeouts]
+request_seconds = 300
+queue_seconds = 600
+
+[queue]
+max_concurrent_requests = 1
+
+[rate_limit]
+# Advisory only. Omit when the actual reset time is unknown.
+# retry_after_seconds = 300

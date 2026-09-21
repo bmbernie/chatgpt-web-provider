@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,6 +58,155 @@ def _kv_csv(value: str | None) -> dict[str, str]:
     return result
 
 
+def _default_config_path() -> Path:
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+
+    base = (
+        Path(xdg_config_home).expanduser()
+        if xdg_config_home
+        else Path.home() / ".config"
+    )
+
+    return (
+        base
+        / "chatgpt-web-provider"
+        / "config.toml"
+    )
+
+
+def _load_toml_config(
+    config_path: str | Path | None = None,
+) -> dict:
+    explicit = config_path is not None
+
+    if config_path is None:
+        env_path = os.getenv(
+            "CHATGPT_WEB_CONFIG",
+            "",
+        ).strip()
+
+        if env_path:
+            path = Path(env_path).expanduser()
+            explicit = True
+        else:
+            path = _default_config_path()
+    else:
+        path = Path(config_path).expanduser()
+
+    if not path.exists():
+        if explicit:
+            raise FileNotFoundError(
+                f"ChatGPT Web Provider config not found: {path}"
+            )
+
+        return {}
+
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"invalid TOML configuration root: {path}"
+        )
+
+    return data
+
+
+def _config_section(
+    config: dict,
+    name: str,
+) -> dict:
+    value = config.get(name)
+
+    if value is None:
+        return {}
+
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"config section [{name}] must be a table"
+        )
+
+    return value
+
+
+def _toml_str_list(
+    value,
+    default,
+) -> list[str]:
+    if value is None:
+        return list(default)
+
+    if not isinstance(value, list) or not all(
+        isinstance(item, str)
+        for item in value
+    ):
+        raise ValueError(
+            "expected a TOML array of strings"
+        )
+
+    return [
+        item.strip()
+        for item in value
+        if item.strip()
+    ]
+
+
+def _toml_str_map(
+    value,
+    default,
+) -> dict[str, str]:
+    if value is None:
+        return dict(default)
+
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str)
+        and isinstance(item, str)
+        for key, item in value.items()
+    ):
+        raise ValueError(
+            "expected a TOML table of string values"
+        )
+
+    return {
+        key: item
+        for key, item in value.items()
+    }
+
+
+def _toml_bool(
+    value,
+    default: bool,
+    *,
+    name: str,
+) -> bool:
+    if value is None:
+        return default
+
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{name} must be true or false"
+        )
+
+    return value
+
+
+def _env_bool(
+    name: str,
+    default: bool,
+) -> bool:
+    raw = os.getenv(name)
+
+    if raw is None:
+        return default
+
+    return raw.lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 @dataclass(slots=True)
 class Settings:
     api_keys: list[str] = field(default_factory=list)
@@ -94,49 +244,316 @@ class Settings:
             )
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        model_id = os.getenv("CHATGPT_WEB_MODEL", DEFAULT_MODEL)
-        available_models = _csv(os.getenv("CHATGPT_WEB_MODELS")) or list(DEFAULT_MODELS)
+    def from_env(
+        cls,
+        config_path: str | Path | None = None,
+    ) -> "Settings":
+        config = _load_toml_config(config_path)
+
+        provider = _config_section(
+            config,
+            "provider",
+        )
+        chatgpt = _config_section(
+            config,
+            "chatgpt",
+        )
+        server = _config_section(
+            config,
+            "server",
+        )
+        browser = _config_section(
+            config,
+            "browser",
+        )
+        timeouts = _config_section(
+            config,
+            "timeouts",
+        )
+        queue = _config_section(
+            config,
+            "queue",
+        )
+        rate_limit = _config_section(
+            config,
+            "rate_limit",
+        )
+
+        model_env = os.getenv(
+            "CHATGPT_WEB_MODEL"
+        )
+        model_id = (
+            model_env
+            if model_env is not None
+            else str(
+                chatgpt.get(
+                    "model",
+                    DEFAULT_MODEL,
+                )
+            )
+        )
+
+        models_env = os.getenv(
+            "CHATGPT_WEB_MODELS"
+        )
+
+        if models_env is not None:
+            available_models = (
+                _csv(models_env)
+                or list(DEFAULT_MODELS)
+            )
+        else:
+            available_models = _toml_str_list(
+                chatgpt.get("models"),
+                DEFAULT_MODELS,
+            )
+
         if model_id not in available_models:
-            available_models.insert(0, model_id)
-        available_levels = _csv(os.getenv("CHATGPT_WEB_LEVELS")) or ["auto", "fast", "standard", "high"]
-        retry_after_raw = os.getenv(
+            available_models.insert(
+                0,
+                model_id,
+            )
+
+        model_labels_env = os.getenv(
+            "CHATGPT_WEB_MODEL_LABELS"
+        )
+
+        if model_labels_env is not None:
+            model_labels = (
+                _kv_csv(model_labels_env)
+                or dict(DEFAULT_MODEL_LABELS)
+            )
+        else:
+            model_labels = _toml_str_map(
+                chatgpt.get("model_labels"),
+                DEFAULT_MODEL_LABELS,
+            )
+
+        levels_default = [
+            "auto",
+            "fast",
+            "standard",
+            "high",
+        ]
+
+        levels_env = os.getenv(
+            "CHATGPT_WEB_LEVELS"
+        )
+
+        if levels_env is not None:
+            available_levels = (
+                _csv(levels_env)
+                or levels_default
+            )
+        else:
+            available_levels = _toml_str_list(
+                chatgpt.get("levels"),
+                levels_default,
+            )
+
+        level_labels_env = os.getenv(
+            "CHATGPT_WEB_LEVEL_LABELS"
+        )
+
+        if level_labels_env is not None:
+            level_labels = _kv_csv(
+                level_labels_env
+            )
+        else:
+            level_labels = _toml_str_map(
+                chatgpt.get("level_labels"),
+                {},
+            )
+
+        retry_after_env = os.getenv(
             "CHATGPT_WEB_UI_RATE_LIMIT_RETRY_AFTER_SECONDS"
         )
 
-        ui_rate_limit_retry_after_seconds = (
-            int(retry_after_raw)
-            if retry_after_raw
-            and retry_after_raw.strip()
-            else None
+        if retry_after_env is not None:
+            ui_rate_limit_retry_after_seconds = (
+                int(retry_after_env)
+                if retry_after_env.strip()
+                else None
+            )
+        else:
+            retry_after_config = rate_limit.get(
+                "retry_after_seconds"
+            )
+
+            ui_rate_limit_retry_after_seconds = (
+                int(retry_after_config)
+                if retry_after_config is not None
+                else None
+            )
+
+        profile_dir_default = browser.get(
+            "profile_dir",
+            str(
+                Path.home()
+                / ".local/share/"
+                "chatgpt-web-provider/"
+                "chrome-profile"
+            ),
         )
 
+        profile_dir = str(
+            Path(
+                os.getenv(
+                    "CHATGPT_WEB_PROFILE_DIR",
+                    str(profile_dir_default),
+                )
+            ).expanduser()
+        )
+
+        channel_env = os.getenv(
+            "CHATGPT_WEB_BROWSER_CHANNEL"
+        )
+
+        channel_value = (
+            channel_env
+            if channel_env is not None
+            else browser.get("channel")
+        )
+
+        browser_channel = (
+            str(channel_value).strip()
+            if channel_value is not None
+            else ""
+        ) or None
+
+        headless_default = _toml_bool(
+            browser.get("headless"),
+            True,
+            name="browser.headless",
+        )
+
+        extensions_default = _toml_bool(
+            browser.get(
+                "enable_extensions"
+            ),
+            False,
+            name="browser.enable_extensions",
+        )
+
+        backend_value = os.getenv(
+            "CHATGPT_WEB_BACKEND"
+        )
+
+        if backend_value is None:
+            backend_value = provider.get(
+                "backend",
+                "mock",
+            )
+
+        session_policy_value = os.getenv(
+            "CHATGPT_WEB_SESSION_POLICY"
+        )
+
+        if session_policy_value is None:
+            session_policy_value = (
+                chatgpt.get(
+                    "session_policy",
+                    DEFAULT_SESSION_POLICY,
+                )
+            )
+
+        # API keys intentionally remain environment-only.
         return cls(
-            api_keys=_csv(os.getenv("CHATGPT_WEB_API_KEYS")),
-            backend=os.getenv("CHATGPT_WEB_BACKEND", "mock").strip().lower() or "mock",
+            api_keys=_csv(
+                os.getenv(
+                    "CHATGPT_WEB_API_KEYS"
+                )
+            ),
+            backend=(
+                str(backend_value)
+                .strip()
+                .lower()
+                or "mock"
+            ),
             model_id=model_id,
             available_models=available_models,
-            model_labels=_kv_csv(os.getenv("CHATGPT_WEB_MODEL_LABELS")) or dict(DEFAULT_MODEL_LABELS),
+            model_labels=model_labels,
             available_levels=available_levels,
-            level_labels=_kv_csv(os.getenv("CHATGPT_WEB_LEVEL_LABELS")),
-            host=os.getenv("CHATGPT_WEB_HOST", "127.0.0.1"),
-            port=int(os.getenv("CHATGPT_WEB_PORT", "8791")),
-            public_base_url=os.getenv("CHATGPT_WEB_PUBLIC_BASE_URL", "http://127.0.0.1:8791"),
-            profile_dir=os.getenv("CHATGPT_WEB_PROFILE_DIR", str(Path.home() / ".local/share/chatgpt-web-provider/chrome-profile")),
-            headless=os.getenv("CHATGPT_WEB_HEADLESS", "true").lower() in {"1", "true", "yes", "on"},
-            browser_channel=(os.getenv("CHATGPT_WEB_BROWSER_CHANNEL", "").strip() or None),
-            enable_extensions=os.getenv("CHATGPT_WEB_ENABLE_EXTENSIONS", "false").lower() in {"1", "true", "yes", "on"},
-            request_timeout_seconds=int(os.getenv("CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS", "300")),
-            max_concurrent_requests=int(os.getenv("CHATGPT_WEB_MAX_CONCURRENT_REQUESTS", "1")),
-            queue_timeout_seconds=int(os.getenv("CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS", "600")),
+            level_labels=level_labels,
+            host=os.getenv(
+                "CHATGPT_WEB_HOST",
+                str(
+                    server.get(
+                        "host",
+                        "127.0.0.1",
+                    )
+                ),
+            ),
+            port=int(
+                os.getenv(
+                    "CHATGPT_WEB_PORT",
+                    str(
+                        server.get(
+                            "port",
+                            8791,
+                        )
+                    ),
+                )
+            ),
+            public_base_url=os.getenv(
+                "CHATGPT_WEB_PUBLIC_BASE_URL",
+                str(
+                    server.get(
+                        "public_base_url",
+                        "http://127.0.0.1:8791",
+                    )
+                ),
+            ),
+            profile_dir=profile_dir,
+            headless=_env_bool(
+                "CHATGPT_WEB_HEADLESS",
+                headless_default,
+            ),
+            browser_channel=browser_channel,
+            enable_extensions=_env_bool(
+                "CHATGPT_WEB_ENABLE_EXTENSIONS",
+                extensions_default,
+            ),
+            request_timeout_seconds=int(
+                os.getenv(
+                    "CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS",
+                    str(
+                        timeouts.get(
+                            "request_seconds",
+                            300,
+                        )
+                    ),
+                )
+            ),
+            max_concurrent_requests=int(
+                os.getenv(
+                    "CHATGPT_WEB_MAX_CONCURRENT_REQUESTS",
+                    str(
+                        queue.get(
+                            "max_concurrent_requests",
+                            1,
+                        )
+                    ),
+                )
+            ),
+            queue_timeout_seconds=int(
+                os.getenv(
+                    "CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS",
+                    str(
+                        timeouts.get(
+                            "queue_seconds",
+                            600,
+                        )
+                    ),
+                )
+            ),
             ui_rate_limit_retry_after_seconds=(
                 ui_rate_limit_retry_after_seconds
             ),
             session_policy=(
-                os.getenv(
-                    "CHATGPT_WEB_SESSION_POLICY",
-                    DEFAULT_SESSION_POLICY,
-                ).strip().lower()
+                str(session_policy_value)
+                .strip()
+                .lower()
                 or DEFAULT_SESSION_POLICY
             ),
         )
