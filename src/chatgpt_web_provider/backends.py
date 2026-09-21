@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .browser_prompts import (
+    TOOL_CATALOG_SYSTEM_PREFIX,
+    render_host_bridge_context,
+    render_tool_reminder,
+    render_transcript,
+)
 from .config import Settings
 from .chatgpt_ui import (
     ASSISTANT_MESSAGES,
@@ -333,79 +339,6 @@ class BrowserBackend(Backend):
 
         raise ChatGPTUIRateLimitError(
             phase=phase,
-        )
-
-    @staticmethod
-    def _browser_host_bridge_context(
-        messages: list[ChatMessage],
-    ) -> str:
-        """Disambiguate Hermes host context from the ChatGPT web backend."""
-
-        if not any(
-            message.role == "developer"
-            for message in messages
-        ):
-            return ""
-
-        return (
-            "SYSTEM:\n"
-            "HOST BRIDGE CONTEXT:\n"
-            "You are the reasoning backend for a Hermes Agent host. "
-            "The DEVELOPER message below contains policy and runtime "
-            "context for the Hermes host agent you are driving. "
-            "References there to 'you', Hermes Agent, runtime tools, "
-            "or tool availability describe the host agent, not the "
-            "native ChatGPT web UI.\n"
-            "The external tool catalog supplied with this request is "
-            "authoritative for host-tool availability. A listed "
-            "external tool is available even though it is not a native "
-            "ChatGPT UI tool. When the user's request requires a listed "
-            "tool, use the external tool-call protocol supplied by the "
-            "provider instead of reporting that the tool is unavailable."
-        )
-
-    @staticmethod
-    def _browser_tool_reminder(
-        tools: list[dict] | None,
-    ) -> str:
-        if not tools:
-            return ""
-
-        available_names = {
-            function.get("name")
-            for tool in tools
-            if isinstance(tool, dict)
-            and isinstance(
-                function := tool.get("function"),
-                dict,
-            )
-            and isinstance(function.get("name"), str)
-        }
-
-        gateway_names = {
-            "tool_search",
-            "tool_describe",
-            "tool_call",
-        }
-
-        if gateway_names.issubset(available_names):
-            return (
-                "EXTERNAL TOOL REMINDER:\n"
-                "Hermes host tools remain available. "
-                "When a requested capability is not directly visible, "
-                "use tool_search, tool_describe, and tool_call to "
-                "discover and invoke it. Do not report a tool or "
-                "server as unavailable before attempting that path."
-            )
-
-        return (
-            "EXTERNAL TOOL REMINDER:\n"
-            "The external tools listed above are available through "
-            "the Hermes host. When the user explicitly asks for an "
-            "operation provided by one of them, call the matching "
-            "tool instead of answering that it is unavailable. "
-            "Return normal prose only after the required tool work "
-            "has completed or an actual tool call reports failure."
         )
 
     @staticmethod
@@ -1139,23 +1072,23 @@ class BrowserBackend(Backend):
     ) -> str:
         """Build the browser prompt including host/tool bridge context."""
         tool_catalog_text = (
-            "SYSTEM:\n" + tool_catalog_prompt
+            TOOL_CATALOG_SYSTEM_PREFIX + tool_catalog_prompt
             if tool_catalog_prompt
             else ""
         )
 
         host_bridge_text = (
-            self._browser_host_bridge_context(messages)
+            render_host_bridge_context(messages)
         )
 
         message_text = (
-            self._render_prompt(messages)
+            render_transcript(messages)
             if messages
             else ""
         )
 
         tool_reminder_text = (
-            self._browser_tool_reminder(tools)
+            render_tool_reminder(tools)
         )
 
         prompt_parts = [
@@ -1487,7 +1420,7 @@ class BrowserBackend(Backend):
                     tool_catalog_prompt=tool_catalog_prompt,
                 )
             else:
-                prompt = self._render_prompt(messages)
+                prompt = render_transcript(messages)
 
             prompt_chars = len(prompt)
             phase = "ensure_page"
@@ -2270,72 +2203,6 @@ class BrowserBackend(Backend):
             separators=(",", ":"),
             ensure_ascii=False,
         )
-
-    @staticmethod
-    def _render_prompt(
-        messages: list[ChatMessage],
-    ) -> str:
-        rendered = []
-
-        for message in messages:
-            if (
-                message.role == "assistant"
-                and message.tool_calls
-            ):
-                calls = [
-                    call.model_dump(
-                        mode="json",
-                        exclude_none=True,
-                    )
-                    for call in message.tool_calls
-                ]
-
-                rendered.append(
-                    "ASSISTANT EXTERNAL TOOL CALLS:\n"
-                    + json.dumps(
-                        calls,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    )
-                )
-
-                continue
-
-            if message.role == "tool":
-                metadata = []
-
-                if message.tool_call_id:
-                    metadata.append(
-                        f"id={message.tool_call_id}"
-                    )
-
-                if message.name:
-                    metadata.append(
-                        f"name={message.name}"
-                    )
-
-                suffix = (
-                    " " + " ".join(metadata)
-                    if metadata
-                    else ""
-                )
-
-                rendered.append(
-                    "EXTERNAL TOOL RESULT"
-                    + suffix
-                    + ":\n"
-                    + message.text()
-                )
-
-                continue
-
-            rendered.append(
-                f"{message.role.upper()}: "
-                f"{message.text()}"
-            )
-
-        return "\n\n".join(rendered)
 
     async def _submit_prompt(self, page, composer) -> None:  # pragma: no cover - browser integration
         """Wait for the ChatGPT Send button, click it, and verify submission.

@@ -894,6 +894,9 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
 
 
 def test_browser_tool_reminder_keeps_tools_salient():
+    from chatgpt_web_provider.browser_prompts import (
+        render_tool_reminder,
+    )
     def tool(name):
         return {
             "type": "function",
@@ -909,7 +912,7 @@ def test_browser_tool_reminder_keeps_tools_salient():
         tool("tool_call"),
     ]
 
-    reminder = BrowserBackend._browser_tool_reminder(
+    reminder = render_tool_reminder(
         gateway_tools
     )
 
@@ -917,7 +920,7 @@ def test_browser_tool_reminder_keeps_tools_salient():
     assert "tool_describe" in reminder
     assert "tool_call" in reminder
 
-    direct = BrowserBackend._browser_tool_reminder(
+    direct = render_tool_reminder(
         [tool("mcp__worker_broker__worker_list")]
     )
 
@@ -925,11 +928,14 @@ def test_browser_tool_reminder_keeps_tools_salient():
     assert "call the matching tool" in direct
     assert "actual tool call reports failure" in direct
 
-    assert BrowserBackend._browser_tool_reminder(None) == ""
-    assert BrowserBackend._browser_tool_reminder([]) == ""
+    assert render_tool_reminder(None) == ""
+    assert render_tool_reminder([]) == ""
 
 
 def test_browser_host_bridge_context_for_developer_messages():
+    from chatgpt_web_provider.browser_prompts import (
+        render_host_bridge_context,
+    )
     developer_messages = [
         ChatMessage(
             role="developer",
@@ -941,7 +947,7 @@ def test_browser_host_bridge_context_for_developer_messages():
         ),
     ]
 
-    bridge = BrowserBackend._browser_host_bridge_context(
+    bridge = render_host_bridge_context(
         developer_messages
     )
 
@@ -959,12 +965,12 @@ def test_browser_host_bridge_context_for_developer_messages():
     ]
 
     assert (
-        BrowserBackend._browser_host_bridge_context(user_only)
+        render_host_bridge_context(user_only)
         == ""
     )
 
     assert (
-        BrowserBackend._browser_host_bridge_context([])
+        render_host_bridge_context([])
         == ""
     )
 
