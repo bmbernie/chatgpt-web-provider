@@ -75,6 +75,23 @@ class ChatGPTUIRateLimitError(RuntimeError):
         )
 
 
+class ChatGPTBrowserStateError(RuntimeError):
+    """Browser/UI state could not be inspected reliably."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        operation: str,
+    ):
+        self.phase = phase
+        self.operation = operation
+
+        super().__init__(
+            "ChatGPT browser state could not be inspected reliably"
+        )
+
+
 class ChatGPTGenerationTimeoutError(RuntimeError):
     """ChatGPT generation exceeded the configured completion deadline."""
 
@@ -2431,8 +2448,18 @@ class BrowserBackend(Backend):
                         self.settings.generation_settle_ms
                     )
                     return
-            except Exception:
-                return
+            except Exception as exc:
+                logger.error(
+                    "browser_generation_state_inspection_failed "
+                    "operation=stop_control_count "
+                    "error_type=%s",
+                    type(exc).__name__,
+                )
+
+                raise ChatGPTBrowserStateError(
+                    phase="generation_wait",
+                    operation="stop_control_count",
+                ) from exc
 
             await page.wait_for_timeout(
                 self.settings.generation_poll_ms

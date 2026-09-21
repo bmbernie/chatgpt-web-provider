@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import (
     Backend,
+    ChatGPTBrowserStateError,
     ChatGPTGenerationTimeoutError,
     ChatGPTUIRateLimitError,
     build_backend,
@@ -243,6 +244,27 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     )
     app.state.settings = settings
     app.state.backend = backend
+
+    @app.exception_handler(ChatGPTBrowserStateError)
+    async def chatgpt_browser_state_error(
+        _: Request,
+        exc: ChatGPTBrowserStateError,
+    ):
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "message": (
+                        "ChatGPT browser state could not be "
+                        "inspected reliably"
+                    ),
+                    "type": "browser_state_error",
+                    "code": "chatgpt_browser_state_error",
+                    "phase": exc.phase,
+                    "operation": exc.operation,
+                }
+            },
+        )
 
     @app.exception_handler(ChatGPTGenerationTimeoutError)
     async def chatgpt_generation_timeout(

@@ -1095,3 +1095,61 @@ def test_non_affinity_chat_completion_forwards_external_tools():
     assert backend.received["parallel_tool_calls"] is False
     assert backend.received["model"] == "gpt-a"
     assert backend.received["level"] == "high"
+
+
+def test_browser_state_error_maps_to_http_502():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserStateError,
+        MockBackend,
+    )
+
+    class BrowserStateBackend(MockBackend):
+        async def complete(
+            self,
+            messages,
+            model=None,
+            new_session=False,
+            level=None,
+        ):
+            raise ChatGPTBrowserStateError(
+                phase="generation_wait",
+                operation="stop_control_count",
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=BrowserStateBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": settings.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 502
+    assert "retry-after" not in response.headers
+
+    error = response.json()["error"]
+
+    assert error["type"] == "browser_state_error"
+    assert error["code"] == "chatgpt_browser_state_error"
+    assert error["phase"] == "generation_wait"
+    assert error["operation"] == "stop_control_count"

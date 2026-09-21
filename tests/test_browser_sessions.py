@@ -1220,3 +1220,42 @@ def test_browser_non_affinity_tools_use_external_tool_bridge():
         )
 
     asyncio.run(run())
+
+
+def test_generation_state_inspection_failure_is_not_success():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserStateError,
+    )
+
+    class FailingStop:
+        async def count(self):
+            raise RuntimeError("page closed")
+
+    class FakePage:
+        def locator(self, selector):
+            return FailingStop()
+
+        async def wait_for_timeout(self, milliseconds):
+            raise AssertionError(
+                "poll wait should not occur after inspection failure"
+            )
+
+    async def run():
+        backend = BrowserBackend(settings())
+
+        try:
+            await backend._wait_until_idle(
+                FakePage()
+            )
+
+        except ChatGPTBrowserStateError as exc:
+            assert exc.phase == "generation_wait"
+            assert exc.operation == "stop_control_count"
+
+        else:
+            raise AssertionError(
+                "browser-state inspection failure "
+                "was treated as successful completion"
+            )
+
+    asyncio.run(run())
