@@ -2361,11 +2361,24 @@ class BrowserBackend(Backend):
     def _message_signature(
         message: ChatMessage,
     ) -> str:
+        payload = message.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+
+        # OpenAI-compatible clients may round-trip an assistant
+        # tool-call message with content omitted, null, or "".
+        # Those forms are semantically equivalent when the message
+        # contains tool calls, so keep affinity matching stable.
+        if (
+            message.role == "assistant"
+            and message.tool_calls
+            and message.content in (None, "")
+        ):
+            payload.pop("content", None)
+
         return json.dumps(
-            message.model_dump(
-                mode="json",
-                exclude_none=True,
-            ),
+            payload,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,

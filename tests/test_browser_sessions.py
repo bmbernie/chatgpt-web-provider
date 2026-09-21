@@ -1861,3 +1861,56 @@ def test_browser_prompt_places_host_bridge_after_developer_context():
         < reminder_pos
         < catalog_pos
     )
+
+
+def test_affinity_tool_call_signature_normalizes_empty_content():
+    from chatgpt_web_provider.models import (
+        ToolCall,
+        ToolFunctionCall,
+    )
+
+    backend = BrowserBackend(settings())
+
+    call = ToolCall(
+        id="call-roundtrip",
+        function=ToolFunctionCall(
+            name="worker_list",
+            arguments="{}",
+        ),
+    )
+
+    null_content = ChatMessage(
+        role="assistant",
+        content=None,
+        tool_calls=[call],
+    )
+
+    empty_content = ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=[call],
+    )
+
+    omitted_content = ChatMessage.model_validate(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                call.model_dump(mode="json"),
+            ],
+        }
+    )
+
+    assert omitted_content.content == ""
+
+    expected = backend._message_signature(
+        null_content
+    )
+
+    assert (
+        backend._message_signature(empty_content)
+        == expected
+    )
+    assert (
+        backend._message_signature(omitted_content)
+        == expected
+    )
