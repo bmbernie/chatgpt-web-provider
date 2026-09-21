@@ -830,7 +830,15 @@ class BrowserBackend(Backend):
                 f"{conversation_policy}"
             )
 
-        await self._enable_temporary_chat(page)
+        await self._enable_temporary_chat(
+            page,
+            launch_timeout_ms=(
+                self.settings.policy_launch_timeout_ms
+            ),
+            ready_timeout_ms=(
+                self.settings.policy_ready_timeout_ms
+            ),
+        )
 
         desired_personalization = (
             "Personalized"
@@ -842,11 +850,17 @@ class BrowserBackend(Backend):
         await self._set_temporary_personalization(
             page,
             desired_personalization,
+            ready_timeout_ms=(
+                self.settings.policy_ready_timeout_ms
+            ),
         )
 
     @staticmethod
     async def _enable_temporary_chat(
         page,
+        *,
+        launch_timeout_ms: int,
+        ready_timeout_ms: int,
     ) -> None:
         """Enable Temporary Chat and verify the UI entered that mode."""
         enabled = page.locator(
@@ -862,7 +876,7 @@ class BrowserBackend(Backend):
 
         await toggle.wait_for(
             state="visible",
-            timeout=30_000,
+            timeout=launch_timeout_ms,
         )
         await BrowserBackend._raise_if_ui_rate_limited(
             page,
@@ -880,13 +894,15 @@ class BrowserBackend(Backend):
 
         await enabled.wait_for(
             state="visible",
-            timeout=10_000,
+            timeout=ready_timeout_ms,
         )
 
     @staticmethod
     async def _set_temporary_personalization(
         page,
         desired: str,
+        *,
+        ready_timeout_ms: int,
     ) -> None:
         """Pin Temporary Chat to Personalized or Unpersonalized."""
         desired_button = page.locator(
@@ -908,7 +924,7 @@ class BrowserBackend(Backend):
 
         await launcher.wait_for(
             state="visible",
-            timeout=10_000,
+            timeout=ready_timeout_ms,
         )
         await BrowserBackend._raise_if_ui_rate_limited(
             page,
@@ -935,13 +951,13 @@ class BrowserBackend(Backend):
 
         await option.wait_for(
             state="visible",
-            timeout=10_000,
+            timeout=ready_timeout_ms,
         )
         await option.click()
 
         await desired_button.wait_for(
             state="visible",
-            timeout=10_000,
+            timeout=ready_timeout_ms,
         )
 
     async def _create_pinned_session_page(
@@ -1360,9 +1376,14 @@ class BrowserBackend(Backend):
     async def _wait_for_reasoning_control(
         self,
         page,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float | None = None,
     ):
         """Wait for the reasoning control inside the composer shell."""
+        if timeout_seconds is None:
+            timeout_seconds = (
+                self.settings.reasoning_control_timeout_ms
+                / 1000
+            )
         known_labels = {
             self._normalize_preference_text(
                 self.settings.level_label(level)
@@ -2113,22 +2134,43 @@ class BrowserBackend(Backend):
             "ChatGPT Send button was clicked but submission was not confirmed"
         )
 
-    @staticmethod
-    async def _wait_until_idle(page) -> None:  # pragma: no cover - browser integration
-        stop = page.locator("button[aria-label*='Stop'], button[data-testid*='stop']")
-        for _ in range(240):
+    async def _wait_until_idle(self, page) -> None:  # pragma: no cover - browser integration
+        stop = page.locator(
+            "button[aria-label*='Stop'], "
+            "button[data-testid*='stop']"
+        )
+
+        deadline = (
+            time.monotonic()
+            + self.settings.generation_timeout_seconds
+        )
+
+        while time.monotonic() < deadline:
             try:
                 if await stop.count() == 0:
-                    await page.wait_for_timeout(1500)
+                    await page.wait_for_timeout(
+                        self.settings.generation_settle_ms
+                    )
                     return
             except Exception:
                 return
-            await page.wait_for_timeout(1000)
+
+            await page.wait_for_timeout(
+                self.settings.generation_poll_ms
+            )
+
+        logger.warning(
+            "browser_generation_wait_timeout "
+            "timeout_seconds=%d",
+            self.settings.generation_timeout_seconds,
+        )
 
     async def _start_new_session(self, page) -> None:  # pragma: no cover - browser integration
         """Move ChatGPT to a fresh conversation before sending the prompt."""
         await page.goto(self.settings.chatgpt_base_url, wait_until="domcontentloaded", timeout=self.settings.navigation_timeout_ms)
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(
+            self.settings.new_session_settle_ms
+        )
         if await page.locator("#prompt-textarea, div[contenteditable='true']").count() > 0:
             return
         for selector in (
@@ -2141,7 +2183,9 @@ class BrowserBackend(Backend):
             try:
                 if await candidate.count() > 0:
                     await candidate.click(timeout=5_000)
-                    await page.wait_for_timeout(1500)
+                    await page.wait_for_timeout(
+            self.settings.new_session_settle_ms
+        )
                     return
             except Exception:
                 continue

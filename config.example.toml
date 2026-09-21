@@ -68,6 +68,17 @@ request_seconds = 300
 queue_seconds = 600
 navigation_ms = 60000
 composer_ready_ms = 30000
+policy_launch_ms = 30000
+policy_ready_ms = 10000
+reasoning_control_ms = 45000
+
+# Maximum time to wait for ChatGPT generation to finish.
+generation_seconds = 240
+generation_poll_ms = 1000
+generation_settle_ms = 1500
+
+# Delay after navigating to or explicitly creating a fresh chat.
+new_session_settle_ms = 1500
 
 [queue]
 max_concurrent_requests = 1

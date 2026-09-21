@@ -57,6 +57,13 @@ request_seconds = 111
 queue_seconds = 222
 navigation_ms = 44444
 composer_ready_ms = 55555
+policy_launch_ms = 31000
+policy_ready_ms = 11000
+reasoning_control_ms = 46000
+generation_seconds = 241
+generation_poll_ms = 1100
+generation_settle_ms = 1600
+new_session_settle_ms = 1700
 
 [queue]
 max_concurrent_requests = 3
@@ -104,6 +111,13 @@ retry_after_seconds = 333
     assert settings.clipboard_chunk_size == 2048
     assert settings.navigation_timeout_ms == 44444
     assert settings.composer_ready_timeout_ms == 55555
+    assert settings.policy_launch_timeout_ms == 31000
+    assert settings.policy_ready_timeout_ms == 11000
+    assert settings.reasoning_control_timeout_ms == 46000
+    assert settings.generation_timeout_seconds == 241
+    assert settings.generation_poll_ms == 1100
+    assert settings.generation_settle_ms == 1600
+    assert settings.new_session_settle_ms == 1700
 
     assert settings.request_timeout_seconds == 111
     assert settings.queue_timeout_seconds == 222
@@ -249,6 +263,34 @@ composer_ready_ms = 20000
         "CHATGPT_WEB_COMPOSER_READY_TIMEOUT_MS",
         "35000",
     )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_POLICY_LAUNCH_TIMEOUT_MS",
+        "32000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_POLICY_READY_TIMEOUT_MS",
+        "12000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_REASONING_CONTROL_TIMEOUT_MS",
+        "47000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_GENERATION_TIMEOUT_SECONDS",
+        "242",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_GENERATION_POLL_MS",
+        "1200",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_GENERATION_SETTLE_MS",
+        "1800",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_NEW_SESSION_SETTLE_MS",
+        "1900",
+    )
 
     settings = Settings.from_env(config)
 
@@ -262,3 +304,10 @@ composer_ready_ms = 20000
     assert settings.viewport_height == 1000
     assert settings.navigation_timeout_ms == 65000
     assert settings.composer_ready_timeout_ms == 35000
+    assert settings.policy_launch_timeout_ms == 32000
+    assert settings.policy_ready_timeout_ms == 12000
+    assert settings.reasoning_control_timeout_ms == 47000
+    assert settings.generation_timeout_seconds == 242
+    assert settings.generation_poll_ms == 1200
+    assert settings.generation_settle_ms == 1800
+    assert settings.new_session_settle_ms == 1900

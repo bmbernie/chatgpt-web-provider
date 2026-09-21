@@ -438,14 +438,31 @@ def test_policy_session_dispatches_conversation_modes():
         async def _start_new_session(self, page):
             self.started.append(page)
 
-        async def _enable_temporary_chat(self, page):
+        async def _enable_temporary_chat(
+            self,
+            page,
+            *,
+            launch_timeout_ms,
+            ready_timeout_ms,
+        ):
+            assert launch_timeout_ms == (
+                self.settings.policy_launch_timeout_ms
+            )
+            assert ready_timeout_ms == (
+                self.settings.policy_ready_timeout_ms
+            )
             self.temporary_enabled.append(page)
 
         async def _set_temporary_personalization(
             self,
             page,
             desired,
+            *,
+            ready_timeout_ms,
         ):
+            assert ready_timeout_ms == (
+                self.settings.policy_ready_timeout_ms
+            )
             self.personalization.append(
                 (page, desired)
             )
@@ -550,6 +567,7 @@ def test_temporary_personalization_uses_exact_menu_text():
         await BrowserBackend._set_temporary_personalization(
             page,
             "Personalized",
+            ready_timeout_ms=10_000,
         )
 
         assert page.get_by_text_calls == [

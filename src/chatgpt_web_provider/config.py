@@ -231,6 +231,13 @@ class Settings:
     clipboard_chunk_size: int = 4_096
     navigation_timeout_ms: int = 60_000
     composer_ready_timeout_ms: int = 30_000
+    policy_launch_timeout_ms: int = 30_000
+    policy_ready_timeout_ms: int = 10_000
+    reasoning_control_timeout_ms: int = 45_000
+    generation_timeout_seconds: int = 240
+    generation_poll_ms: int = 1_000
+    generation_settle_ms: int = 1_500
+    new_session_settle_ms: int = 1_500
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -617,6 +624,83 @@ class Settings:
                     ),
                 )
             ),
+            policy_launch_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_POLICY_LAUNCH_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "policy_launch_ms",
+                            30_000,
+                        )
+                    ),
+                )
+            ),
+            policy_ready_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_POLICY_READY_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "policy_ready_ms",
+                            10_000,
+                        )
+                    ),
+                )
+            ),
+            reasoning_control_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_REASONING_CONTROL_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "reasoning_control_ms",
+                            45_000,
+                        )
+                    ),
+                )
+            ),
+            generation_timeout_seconds=int(
+                os.getenv(
+                    "CHATGPT_WEB_GENERATION_TIMEOUT_SECONDS",
+                    str(
+                        timeouts.get(
+                            "generation_seconds",
+                            240,
+                        )
+                    ),
+                )
+            ),
+            generation_poll_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_GENERATION_POLL_MS",
+                    str(
+                        timeouts.get(
+                            "generation_poll_ms",
+                            1_000,
+                        )
+                    ),
+                )
+            ),
+            generation_settle_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_GENERATION_SETTLE_MS",
+                    str(
+                        timeouts.get(
+                            "generation_settle_ms",
+                            1_500,
+                        )
+                    ),
+                )
+            ),
+            new_session_settle_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_NEW_SESSION_SETTLE_MS",
+                    str(
+                        timeouts.get(
+                            "new_session_settle_ms",
+                            1_500,
+                        )
+                    ),
+                )
+            ),
             request_timeout_seconds=int(
                 os.getenv(
                     "CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS",
@@ -680,6 +764,34 @@ class Settings:
         if self.composer_ready_timeout_ms < 1:
             raise ValueError(
                 "CHATGPT_WEB_COMPOSER_READY_TIMEOUT_MS must be >= 1"
+            )
+        if self.policy_launch_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_POLICY_LAUNCH_TIMEOUT_MS must be >= 1"
+            )
+        if self.policy_ready_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_POLICY_READY_TIMEOUT_MS must be >= 1"
+            )
+        if self.reasoning_control_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_REASONING_CONTROL_TIMEOUT_MS must be >= 1"
+            )
+        if self.generation_timeout_seconds < 1:
+            raise ValueError(
+                "CHATGPT_WEB_GENERATION_TIMEOUT_SECONDS must be >= 1"
+            )
+        if self.generation_poll_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_GENERATION_POLL_MS must be >= 1"
+            )
+        if self.generation_settle_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_GENERATION_SETTLE_MS must be >= 1"
+            )
+        if self.new_session_settle_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_NEW_SESSION_SETTLE_MS must be >= 1"
             )
         if not self.api_keys:
             raise ValueError("CHATGPT_WEB_API_KEYS must contain at least one API key")
