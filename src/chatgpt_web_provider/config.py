@@ -238,6 +238,11 @@ class Settings:
     generation_poll_ms: int = 1_000
     generation_settle_ms: int = 1_500
     new_session_settle_ms: int = 1_500
+    picker_ready_timeout_ms: int = 5_000
+    picker_transition_timeout_ms: int = 5_000
+    ui_action_timeout_ms: int = 3_000
+    submit_ready_timeout_ms: int = 30_000
+    submit_confirm_timeout_ms: int = 5_000
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -701,6 +706,61 @@ class Settings:
                     ),
                 )
             ),
+            picker_ready_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_PICKER_READY_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "picker_ready_ms",
+                            5_000,
+                        )
+                    ),
+                )
+            ),
+            picker_transition_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_PICKER_TRANSITION_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "picker_transition_ms",
+                            5_000,
+                        )
+                    ),
+                )
+            ),
+            ui_action_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_UI_ACTION_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "ui_action_ms",
+                            3_000,
+                        )
+                    ),
+                )
+            ),
+            submit_ready_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_SUBMIT_READY_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "submit_ready_ms",
+                            30_000,
+                        )
+                    ),
+                )
+            ),
+            submit_confirm_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_SUBMIT_CONFIRM_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "submit_confirm_ms",
+                            5_000,
+                        )
+                    ),
+                )
+            ),
             request_timeout_seconds=int(
                 os.getenv(
                     "CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS",
@@ -792,6 +852,26 @@ class Settings:
         if self.new_session_settle_ms < 1:
             raise ValueError(
                 "CHATGPT_WEB_NEW_SESSION_SETTLE_MS must be >= 1"
+            )
+        if self.picker_ready_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_PICKER_READY_TIMEOUT_MS must be >= 1"
+            )
+        if self.picker_transition_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_PICKER_TRANSITION_TIMEOUT_MS must be >= 1"
+            )
+        if self.ui_action_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_UI_ACTION_TIMEOUT_MS must be >= 1"
+            )
+        if self.submit_ready_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_SUBMIT_READY_TIMEOUT_MS must be >= 1"
+            )
+        if self.submit_confirm_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_SUBMIT_CONFIRM_TIMEOUT_MS must be >= 1"
             )
         if not self.api_keys:
             raise ValueError("CHATGPT_WEB_API_KEYS must contain at least one API key")

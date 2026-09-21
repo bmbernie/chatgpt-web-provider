@@ -64,6 +64,11 @@ generation_seconds = 241
 generation_poll_ms = 1100
 generation_settle_ms = 1600
 new_session_settle_ms = 1700
+picker_ready_ms = 5100
+picker_transition_ms = 5200
+ui_action_ms = 3100
+submit_ready_ms = 33000
+submit_confirm_ms = 5300
 
 [queue]
 max_concurrent_requests = 3
@@ -118,6 +123,11 @@ retry_after_seconds = 333
     assert settings.generation_poll_ms == 1100
     assert settings.generation_settle_ms == 1600
     assert settings.new_session_settle_ms == 1700
+    assert settings.picker_ready_timeout_ms == 5100
+    assert settings.picker_transition_timeout_ms == 5200
+    assert settings.ui_action_timeout_ms == 3100
+    assert settings.submit_ready_timeout_ms == 33000
+    assert settings.submit_confirm_timeout_ms == 5300
 
     assert settings.request_timeout_seconds == 111
     assert settings.queue_timeout_seconds == 222
@@ -291,6 +301,26 @@ composer_ready_ms = 20000
         "CHATGPT_WEB_NEW_SESSION_SETTLE_MS",
         "1900",
     )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_PICKER_READY_TIMEOUT_MS",
+        "6100",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_PICKER_TRANSITION_TIMEOUT_MS",
+        "6200",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_UI_ACTION_TIMEOUT_MS",
+        "4100",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_SUBMIT_READY_TIMEOUT_MS",
+        "34000",
+    )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_SUBMIT_CONFIRM_TIMEOUT_MS",
+        "6300",
+    )
 
     settings = Settings.from_env(config)
 
@@ -311,3 +341,8 @@ composer_ready_ms = 20000
     assert settings.generation_poll_ms == 1200
     assert settings.generation_settle_ms == 1800
     assert settings.new_session_settle_ms == 1900
+    assert settings.picker_ready_timeout_ms == 6100
+    assert settings.picker_transition_timeout_ms == 6200
+    assert settings.ui_action_timeout_ms == 4100
+    assert settings.submit_ready_timeout_ms == 34000
+    assert settings.submit_confirm_timeout_ms == 6300

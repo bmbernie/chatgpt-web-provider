@@ -80,6 +80,15 @@ generation_settle_ms = 1500
 # Delay after navigating to or explicitly creating a fresh chat.
 new_session_settle_ms = 1500
 
+# Model/reasoning picker interaction.
+picker_ready_ms = 5000
+picker_transition_ms = 5000
+ui_action_ms = 3000
+
+# Send-button readiness and post-click confirmation.
+submit_ready_ms = 30000
+submit_confirm_ms = 5000
+
 [queue]
 max_concurrent_requests = 1
 

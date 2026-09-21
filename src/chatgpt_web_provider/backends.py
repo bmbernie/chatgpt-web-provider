@@ -1457,7 +1457,9 @@ class BrowserBackend(Backend):
             await self._wait_for_reasoning_control(page)
         )
 
-        await control.click(timeout=3000)
+        await control.click(
+            timeout=self.settings.ui_action_timeout_ms
+        )
 
         content = page.locator(
             "[data-testid='composer-intelligence-picker-content']"
@@ -1465,7 +1467,7 @@ class BrowserBackend(Backend):
 
         await content.wait_for(
             state="visible",
-            timeout=5000,
+            timeout=self.settings.picker_ready_timeout_ms,
         )
 
         return control, current_level, content
@@ -1481,7 +1483,7 @@ class BrowserBackend(Backend):
 
         await advanced.wait_for(
             state="visible",
-            timeout=5000,
+            timeout=self.settings.picker_ready_timeout_ms,
         )
 
         options = advanced.locator(
@@ -1551,14 +1553,19 @@ class BrowserBackend(Backend):
 
         await select_model.wait_for(
             state="visible",
-            timeout=5000,
+            timeout=self.settings.picker_ready_timeout_ms,
         )
 
         logger.info("model_view_activate_start")
 
-        await select_model.click(timeout=3000)
+        await select_model.click(
+            timeout=self.settings.ui_action_timeout_ms
+        )
 
-        deadline = time.monotonic() + 5.0
+        deadline = (
+            time.monotonic()
+            + self.settings.picker_transition_timeout_ms / 1000
+        )
 
         while time.monotonic() < deadline:
             try:
@@ -1646,9 +1653,14 @@ class BrowserBackend(Backend):
                 target_label,
             )
 
-            await option.click(timeout=5000)
+            await option.click(
+                timeout=self.settings.picker_transition_timeout_ms
+            )
 
-            deadline = time.monotonic() + 5.0
+            deadline = (
+                time.monotonic()
+                + self.settings.picker_transition_timeout_ms / 1000
+            )
 
             while time.monotonic() < deadline:
                 if await option_checked():
@@ -1673,7 +1685,10 @@ class BrowserBackend(Backend):
         # Selecting a model often transitions back to simple view itself.
         # If it did not, one Escape moves advanced -> simple. Do NOT close
         # the picker; reasoning configuration follows immediately.
-        deadline = time.monotonic() + 5.0
+        deadline = (
+            time.monotonic()
+            + self.settings.picker_transition_timeout_ms / 1000
+        )
         escape_sent = False
 
         while time.monotonic() < deadline:
@@ -1733,7 +1748,7 @@ class BrowserBackend(Backend):
 
         await simple.wait_for(
             state="visible",
-            timeout=5000,
+            timeout=self.settings.picker_ready_timeout_ms,
         )
 
         # Ensure the simple reasoning panel, not advanced model panel,
@@ -1744,7 +1759,10 @@ class BrowserBackend(Backend):
             except Exception:
                 pass
 
-            deadline = time.monotonic() + 3.0
+            deadline = (
+                time.monotonic()
+                + self.settings.ui_action_timeout_ms / 1000
+            )
 
             while time.monotonic() < deadline:
                 if (
@@ -1921,7 +1939,7 @@ class BrowserBackend(Backend):
                         "x": box["width"] / 2,
                         "y": box["height"] / 2,
                     },
-                    timeout=3000,
+                    timeout=self.settings.ui_action_timeout_ms,
                 )
 
             await page.keyboard.press(key)
@@ -1932,7 +1950,10 @@ class BrowserBackend(Backend):
                 key,
             )
 
-        deadline = time.monotonic() + 5.0
+        deadline = (
+            time.monotonic()
+            + self.settings.picker_transition_timeout_ms / 1000
+        )
         last_text = simple_text
 
         while time.monotonic() < deadline:
@@ -2049,8 +2070,7 @@ class BrowserBackend(Backend):
 
         return "\n\n".join(rendered)
 
-    @staticmethod
-    async def _submit_prompt(page, composer) -> None:  # pragma: no cover - browser integration
+    async def _submit_prompt(self, page, composer) -> None:  # pragma: no cover - browser integration
         """Wait for the ChatGPT Send button, click it, and verify submission.
 
         Large fills can leave the composer populated before ChatGPT has made
@@ -2064,7 +2084,16 @@ class BrowserBackend(Backend):
             "button[aria-label='Send']",
         )
 
-        deadline = time.monotonic() + 30.0
+        submit_ready_seconds = (
+            self.settings.submit_ready_timeout_ms
+            / 1000
+        )
+
+        deadline = (
+            time.monotonic()
+            + submit_ready_seconds
+        )
+
         send_button = None
 
         while time.monotonic() < deadline:
@@ -2096,17 +2125,23 @@ class BrowserBackend(Backend):
 
         if send_button is None:
             raise RuntimeError(
-                "ChatGPT Send button did not become enabled within 30 seconds"
+                "ChatGPT Send button did not become enabled within "
+                f"{submit_ready_seconds:g} seconds"
             )
 
-        await send_button.click(timeout=3000)
+        await send_button.click(
+            timeout=self.settings.ui_action_timeout_ms
+        )
 
         # Confirm that the click actually submitted the prompt.
         stop = page.locator(
             "button[aria-label*='Stop'], button[data-testid*='stop']"
         )
 
-        confirm_deadline = time.monotonic() + 5.0
+        confirm_deadline = (
+            time.monotonic()
+            + self.settings.submit_confirm_timeout_ms / 1000
+        )
 
         while time.monotonic() < confirm_deadline:
             try:
