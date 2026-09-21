@@ -1265,3 +1265,231 @@ def test_generation_state_inspection_failure_is_not_success():
             )
 
     asyncio.run(run())
+
+
+def test_submit_prompt_recovers_replaced_composer():
+    from chatgpt_web_provider.chatgpt_ui import (
+        COMPOSER,
+        STOP_BUTTON,
+    )
+
+    class FakeButton:
+        def __init__(self):
+            self.clicks = 0
+
+        async def is_visible(self, timeout=None):
+            return True
+
+        async def is_enabled(self, timeout=None):
+            return True
+
+        async def click(self, timeout=None):
+            self.clicks += 1
+
+    class FakeButtons:
+        def __init__(self, button):
+            self.button = button
+
+        async def count(self):
+            return 1
+
+        def nth(self, index):
+            assert index == 0
+            return self.button
+
+    class FakeStop:
+        async def count(self):
+            return 0
+
+    class BrokenComposer:
+        async def inner_text(self, timeout=None):
+            raise RuntimeError("composer detached")
+
+    class ReplacementComposer:
+        async def inner_text(self, timeout=None):
+            return ""
+
+    class FakeComposers:
+        def __init__(self, replacement):
+            self.replacement = replacement
+
+        async def count(self):
+            return 1
+
+        @property
+        def last(self):
+            return self.replacement
+
+    class FakePage:
+        def __init__(self):
+            self.button = FakeButton()
+            self.replacement = ReplacementComposer()
+
+        def is_closed(self):
+            return False
+
+        def locator(self, selector):
+            if selector == STOP_BUTTON:
+                return FakeStop()
+
+            if selector == COMPOSER:
+                return FakeComposers(
+                    self.replacement
+                )
+
+            return FakeButtons(self.button)
+
+        async def wait_for_timeout(self, milliseconds):
+            return None
+
+    async def run():
+        backend = BrowserBackend(settings())
+        page = FakePage()
+
+        await backend._submit_prompt(
+            page,
+            BrokenComposer(),
+        )
+
+        assert page.button.clicks == 1
+
+    asyncio.run(run())
+
+
+def test_submit_prompt_removed_composer_confirms_submission():
+    from chatgpt_web_provider.chatgpt_ui import (
+        COMPOSER,
+        STOP_BUTTON,
+    )
+
+    class FakeButton:
+        async def is_visible(self, timeout=None):
+            return True
+
+        async def is_enabled(self, timeout=None):
+            return True
+
+        async def click(self, timeout=None):
+            return None
+
+    class FakeButtons:
+        async def count(self):
+            return 1
+
+        def nth(self, index):
+            return FakeButton()
+
+    class FakeStop:
+        async def count(self):
+            return 0
+
+    class BrokenComposer:
+        async def inner_text(self, timeout=None):
+            raise RuntimeError("composer removed")
+
+    class NoComposers:
+        async def count(self):
+            return 0
+
+        @property
+        def last(self):
+            raise AssertionError(
+                "last should not be read when count is zero"
+            )
+
+    class FakePage:
+        def is_closed(self):
+            return False
+
+        def locator(self, selector):
+            if selector == STOP_BUTTON:
+                return FakeStop()
+
+            if selector == COMPOSER:
+                return NoComposers()
+
+            return FakeButtons()
+
+        async def wait_for_timeout(self, milliseconds):
+            return None
+
+    async def run():
+        backend = BrowserBackend(settings())
+
+        await backend._submit_prompt(
+            FakePage(),
+            BrokenComposer(),
+        )
+
+    asyncio.run(run())
+
+
+def test_submit_prompt_closed_page_is_browser_state_error():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserStateError,
+    )
+    from chatgpt_web_provider.chatgpt_ui import (
+        STOP_BUTTON,
+    )
+
+    class FakeButton:
+        async def is_visible(self, timeout=None):
+            return True
+
+        async def is_enabled(self, timeout=None):
+            return True
+
+        async def click(self, timeout=None):
+            return None
+
+    class FakeButtons:
+        async def count(self):
+            return 1
+
+        def nth(self, index):
+            return FakeButton()
+
+    class FakeStop:
+        async def count(self):
+            return 0
+
+    class BrokenComposer:
+        async def inner_text(self, timeout=None):
+            raise RuntimeError("page closed")
+
+    class FakePage:
+        def is_closed(self):
+            return True
+
+        def locator(self, selector):
+            if selector == STOP_BUTTON:
+                return FakeStop()
+
+            return FakeButtons()
+
+        async def wait_for_timeout(self, milliseconds):
+            return None
+
+    async def run():
+        backend = BrowserBackend(settings())
+
+        try:
+            await backend._submit_prompt(
+                FakePage(),
+                BrokenComposer(),
+            )
+
+        except ChatGPTBrowserStateError as exc:
+            assert exc.phase == "submit_confirm"
+            assert (
+                exc.operation
+                == "composer_state_inspection"
+            )
+
+        else:
+            raise AssertionError(
+                "closed browser page was treated as "
+                "successful submission"
+            )
+
+    asyncio.run(run())

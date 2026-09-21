@@ -2204,6 +2204,55 @@ class BrowserBackend(Backend):
             ensure_ascii=False,
         )
 
+    async def _recover_submit_composer_state(
+        self,
+        page,
+    ) -> tuple[Any | None, bool]:
+        """Recover submission state after the original composer becomes unusable.
+
+        A live page with no composer indicates that the submitted composer was
+        removed. A replacement composer is inspected directly. Browser/page
+        failures are not treated as successful submission.
+        """
+        try:
+            if page.is_closed():
+                raise ChatGPTBrowserStateError(
+                    phase="submit_confirm",
+                    operation="composer_state_inspection",
+                )
+
+            composers = page.locator(COMPOSER)
+            count = await composers.count()
+
+            if count == 0:
+                return None, True
+
+            replacement = composers.last
+
+            remaining = (
+                await replacement.inner_text(
+                    timeout=SUBMIT_COMPOSER_PROBE_MS
+                )
+            ).strip()
+
+            return replacement, not remaining
+
+        except ChatGPTBrowserStateError:
+            raise
+
+        except Exception as exc:
+            logger.error(
+                "browser_submit_state_inspection_failed "
+                "operation=composer_state_inspection "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+            raise ChatGPTBrowserStateError(
+                phase="submit_confirm",
+                operation="composer_state_inspection",
+            ) from exc
+
     async def _submit_prompt(self, page, composer) -> None:  # pragma: no cover - browser integration
         """Wait for the ChatGPT Send button, click it, and verify submission.
 
@@ -2288,9 +2337,21 @@ class BrowserBackend(Backend):
 
                 if not remaining:
                     return
-            except Exception:
-                # Composer replacement/removal also indicates submission.
-                return
+            except Exception as exc:
+                logger.info(
+                    "browser_submit_composer_replaced "
+                    "error_type=%s",
+                    type(exc).__name__,
+                )
+
+                composer, submitted = (
+                    await self._recover_submit_composer_state(
+                        page
+                    )
+                )
+
+                if submitted:
+                    return
 
             await page.wait_for_timeout(SUBMIT_POLL_MS)
 
