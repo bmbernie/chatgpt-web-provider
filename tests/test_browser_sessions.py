@@ -754,3 +754,67 @@ def test_chatgpt_rate_limit_modal_is_detected():
         ]
 
     asyncio.run(run())
+
+
+def test_composer_writer_uses_fast_path_for_large_prompts():
+    class FakeKeyboard:
+        def __init__(self, events):
+            self.events = events
+
+        async def insert_text(self, text):
+            self.events.append(
+                ("insert_text", len(text))
+            )
+
+    class FakePage:
+        def __init__(self, events):
+            self.keyboard = FakeKeyboard(events)
+
+    class FakeComposer:
+        def __init__(self, events):
+            self.events = events
+
+        async def fill(self, text):
+            self.events.append(
+                ("fill", len(text))
+            )
+
+        async def focus(self):
+            self.events.append(("focus",))
+
+        async def press(self, key):
+            self.events.append(("press", key))
+
+    async def run():
+        # Ordinary prompts retain the existing fill() path.
+        small_events = []
+        method = await BrowserBackend._write_composer_text(
+            FakePage(small_events),
+            FakeComposer(small_events),
+            "hello",
+        )
+
+        assert method == "fill"
+        assert small_events == [
+            ("fill", 5),
+        ]
+
+        # Large prompts avoid locator.fill().
+        large_events = []
+        large_text = "x" * 70_000
+
+        method = await BrowserBackend._write_composer_text(
+            FakePage(large_events),
+            FakeComposer(large_events),
+            large_text,
+        )
+
+        assert method == "keyboard_insert_text"
+        assert large_events == [
+            ("focus",),
+            ("press", "Control+A"),
+            ("press", "Backspace"),
+            ("insert_text", 70_000),
+        ]
+
+    asyncio.run(run())

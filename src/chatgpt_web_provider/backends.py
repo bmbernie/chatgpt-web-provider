@@ -226,6 +226,29 @@ class BrowserBackend(Backend):
             retry_after_seconds=60,
         )
 
+    @staticmethod
+    async def _write_composer_text(
+        page,
+        composer,
+        text: str,
+    ) -> str:
+        """Write prompt text without making large contenteditable fills stall."""
+
+        # locator.fill() is simple and reliable for ordinary prompts.
+        if len(text) < 16_384:
+            await composer.fill(text)
+            return "fill"
+
+        # Large Hermes prompts can cause Playwright's contenteditable fill()
+        # action to exceed its action timeout even though Chrome eventually
+        # applies the text. Use the browser editing pipeline directly.
+        await composer.focus()
+        await composer.press("Control+A")
+        await composer.press("Backspace")
+        await page.keyboard.insert_text(text)
+
+        return "keyboard_insert_text"
+
     async def _ensure_page(self):
         if self._page:
             return self._page
@@ -873,18 +896,42 @@ class BrowserBackend(Backend):
             phase="composer_fill",
         )
 
+        input_method = (
+            "keyboard_insert_text"
+            if len(prompt) >= 16_384
+            else "fill"
+        )
+
+        logger.info(
+            "browser_composer_input_start "
+            "method=%s prompt_chars=%d",
+            input_method,
+            len(prompt),
+        )
+
         try:
-            await composer.fill(prompt)
+            input_method = await self._write_composer_text(
+                page,
+                composer,
+                prompt,
+            )
         except Exception as exc:
             await self._raise_if_ui_rate_limited(
                 page,
-                phase="composer_fill",
+                phase="composer_input",
             )
 
             raise RuntimeError(
-                f"ChatGPT composer fill failed "
+                f"ChatGPT composer input failed "
                 f"({type(exc).__name__})"
             ) from None
+
+        logger.info(
+            "browser_composer_input_complete "
+            "method=%s prompt_chars=%d",
+            input_method,
+            len(prompt),
+        )
 
         await self._submit_prompt(page, composer)
         await self._wait_until_idle(page)
