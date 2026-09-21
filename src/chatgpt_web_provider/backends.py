@@ -121,6 +121,35 @@ class Backend(ABC):
     async def health(self) -> dict:
         return {"ok": True, "backend": self.settings.backend}
 
+    async def complete_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str | None = None,
+        new_session: bool = False,
+        level: str | None = None,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
+    ) -> CompletionResult:
+        """Complete a non-affinity request with external tools.
+
+        Backends that support browser-side tool bridging should override
+        this method. Keep complete() unchanged for compatibility with
+        existing backend implementations and test doubles.
+        """
+        if not tools:
+            return await self.complete(
+                messages,
+                model=model,
+                new_session=new_session,
+                level=level,
+            )
+
+        raise NotImplementedError(
+            "backend does not support non-affinity external tools"
+        )
+
 
     async def create_session(
         self,
@@ -1084,6 +1113,63 @@ class BrowserBackend(Backend):
     async def _close_pinned_session_page(page) -> None:
         await page.close()
 
+    def _build_browser_prompt(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None = None,
+        tool_catalog_prompt: str | None = None,
+    ) -> str:
+        """Build the browser prompt including host/tool bridge context."""
+        tool_catalog_text = (
+            "SYSTEM:\n" + tool_catalog_prompt
+            if tool_catalog_prompt
+            else ""
+        )
+
+        host_bridge_text = (
+            self._browser_host_bridge_context(messages)
+        )
+
+        message_text = (
+            self._render_prompt(messages)
+            if messages
+            else ""
+        )
+
+        tool_reminder_text = (
+            self._browser_tool_reminder(tools)
+        )
+
+        prompt_parts = [
+            part
+            for part in (
+                host_bridge_text,
+                message_text,
+                tool_reminder_text,
+                tool_catalog_text,
+            )
+            if part
+        ]
+
+        prompt = "\n\n".join(prompt_parts)
+
+        logger.info(
+            "browser_prompt_components "
+            "host_bridge_chars=%d "
+            "tool_catalog_chars=%d "
+            "message_chars=%d "
+            "tool_reminder_chars=%d "
+            "total_chars=%d",
+            len(host_bridge_text),
+            len(tool_catalog_text),
+            len(message_text),
+            len(tool_reminder_text),
+            len(prompt),
+        )
+
+        return prompt
+
     async def _execute_browser_turn(
         self,
         page,
@@ -1246,56 +1332,12 @@ class BrowserBackend(Backend):
                 f"{session.session_id}"
             )
 
-        tool_catalog_text = (
-            "SYSTEM:\n" + tool_catalog_prompt
-            if tool_catalog_prompt
-            else ""
+        prompt = self._build_browser_prompt(
+            messages,
+            tools=tools,
+            tool_catalog_prompt=tool_catalog_prompt,
         )
 
-        host_bridge_text = (
-            self._browser_host_bridge_context(messages)
-        )
-
-        message_text = (
-            self._render_prompt(messages)
-            if messages
-            else ""
-        )
-
-        tool_reminder_text = (
-            self._browser_tool_reminder(tools)
-        )
-
-        # Keep the current transcript first. Put the lightweight
-        # reminder next and the complete external-tool catalog last,
-        # so its exact tool-call serialization protocol is closest
-        # to generation on catalog-bearing turns.
-        prompt_parts = [
-            part
-            for part in (
-                host_bridge_text,
-                message_text,
-                tool_reminder_text,
-                tool_catalog_text,
-            )
-            if part
-        ]
-
-        prompt = "\n\n".join(prompt_parts)
-
-        logger.info(
-            "browser_prompt_components "
-            "host_bridge_chars=%d "
-            "tool_catalog_chars=%d "
-            "message_chars=%d "
-            "tool_reminder_chars=%d "
-            "total_chars=%d",
-            len(host_bridge_text),
-            len(tool_catalog_text),
-            len(message_text),
-            len(tool_reminder_text),
-            len(prompt),
-        )
         started = time.perf_counter()
 
         logger.info(
@@ -1364,13 +1406,72 @@ class BrowserBackend(Backend):
             tool_calls=tool_calls or [],
         )
 
-    async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
+    async def complete(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        new_session: bool = False,
+        level: str | None = None,
+    ) -> CompletionResult:
+        return await self._complete_non_affinity(
+            messages,
+            model=model,
+            new_session=new_session,
+            level=level,
+        )
+
+    async def complete_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str | None = None,
+        new_session: bool = False,
+        level: str | None = None,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
+    ) -> CompletionResult:
+        return await self._complete_non_affinity(
+            messages,
+            model=model,
+            new_session=new_session,
+            level=level,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    async def _complete_non_affinity(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str | None = None,
+        new_session: bool = False,
+        level: str | None = None,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        parallel_tool_calls: bool = True,
+    ) -> CompletionResult:
         async with self._lock:
             total_started = time.perf_counter()
             selected_model = model or self.settings.model_id
             selected_level = level or "-"
             message_count = len(messages)
-            prompt = self._render_prompt(messages)
+            if tools:
+                tool_catalog_prompt = render_tool_catalog(
+                    tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+
+                prompt = self._build_browser_prompt(
+                    messages,
+                    tools=tools,
+                    tool_catalog_prompt=tool_catalog_prompt,
+                )
+            else:
+                prompt = self._render_prompt(messages)
+
             prompt_chars = len(prompt)
             phase = "ensure_page"
 
@@ -1446,10 +1547,36 @@ class BrowserBackend(Backend):
                     total_ms,
                 )
 
+                tool_calls = (
+                    parse_tool_calls(
+                        text,
+                        tools,
+                        parallel_tool_calls=parallel_tool_calls,
+                    )
+                    if tools
+                    else []
+                )
+
+                if tools:
+                    logger.info(
+                        "browser_external_tool_result "
+                        "session_id=- tool_calls=%d names=%s",
+                        len(tool_calls),
+                        ",".join(
+                            call.function.name
+                            for call in tool_calls
+                        ) or "-",
+                    )
+
                 return CompletionResult(
-                    text=text,
+                    text=(
+                        ""
+                        if tool_calls
+                        else text
+                    ),
                     model=selected_model,
                     level=level,
+                    tool_calls=tool_calls,
                 )
 
             except Exception as exc:

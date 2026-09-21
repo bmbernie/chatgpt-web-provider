@@ -979,3 +979,119 @@ def test_generation_timeout_maps_to_http_504():
     assert error["type"] == "generation_timeout_error"
     assert error["code"] == "chatgpt_generation_timeout"
     assert error["timeout_seconds"] == 240
+
+
+def test_non_affinity_chat_completion_forwards_external_tools():
+    from chatgpt_web_provider.backends import MockBackend
+    from chatgpt_web_provider.models import (
+        ToolCall,
+        ToolFunctionCall,
+    )
+
+    class ToolAwareBackend(MockBackend):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.received = None
+
+        async def complete_with_tools(
+            self,
+            messages,
+            *,
+            model=None,
+            new_session=False,
+            level=None,
+            tools=None,
+            tool_choice=None,
+            parallel_tool_calls=True,
+        ):
+            self.received = {
+                "messages": messages,
+                "model": model,
+                "new_session": new_session,
+                "level": level,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "parallel_tool_calls": parallel_tool_calls,
+            }
+
+            return CompletionResult(
+                model=model or self.settings.model_id,
+                level=level,
+                tool_calls=[
+                    ToolCall(
+                        id="call-non-affinity",
+                        function=ToolFunctionCall(
+                            name="worker_list",
+                            arguments="{}",
+                        ),
+                    )
+                ],
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high"],
+    )
+
+    backend = ToolAwareBackend(settings)
+    client = TestClient(
+        create_app(
+            settings,
+            backend=backend,
+        )
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "worker_list",
+                "description": "List workers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        }
+    ]
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": "gpt-a",
+            "reasoning_effort": "high",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "List workers.",
+                }
+            ],
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        },
+    )
+
+    assert response.status_code == 200
+
+    choice = response.json()["choices"][0]
+
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    assert (
+        choice["message"]["tool_calls"][0]["function"]["name"]
+        == "worker_list"
+    )
+
+    assert backend.received is not None
+    assert backend.received["tools"] == tools
+    assert backend.received["tool_choice"] == "auto"
+    assert backend.received["parallel_tool_calls"] is False
+    assert backend.received["model"] == "gpt-a"
+    assert backend.received["level"] == "high"

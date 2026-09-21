@@ -735,23 +735,58 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
             )
 
         else:
-            result = await _run_with_queue(
-                settings,
-                queue_sem,
-                lambda: backend.complete(
-                    req.messages,
-                    model=selected_model,
-                    new_session=new_session,
-                    level=selected_level,
-                ),
-                context=(
-                    "endpoint=chat_completions "
-                    f"model={selected_model} "
-                    f"level={selected_level or '-'} "
-                    f"messages={len(req.messages)} "
-                    f"new_session={str(new_session).lower()}"
-                ),
-            )
+            try:
+                if req.tools:
+                    result = await _run_with_queue(
+                        settings,
+                        queue_sem,
+                        lambda: backend.complete_with_tools(
+                            req.messages,
+                            model=selected_model,
+                            new_session=new_session,
+                            level=selected_level,
+                            tools=req.tools,
+                            tool_choice=req.tool_choice,
+                            parallel_tool_calls=(
+                                req.parallel_tool_calls
+                            ),
+                        ),
+                        context=(
+                            "endpoint=chat_completions "
+                            f"model={selected_model} "
+                            f"level={selected_level or '-'} "
+                            f"messages={len(req.messages)} "
+                            "affinity=false tools=true "
+                            f"new_session={str(new_session).lower()}"
+                        ),
+                    )
+                else:
+                    result = await _run_with_queue(
+                        settings,
+                        queue_sem,
+                        lambda: backend.complete(
+                            req.messages,
+                            model=selected_model,
+                            new_session=new_session,
+                            level=selected_level,
+                        ),
+                        context=(
+                            "endpoint=chat_completions "
+                            f"model={selected_model} "
+                            f"level={selected_level or '-'} "
+                            f"messages={len(req.messages)} "
+                            f"new_session={str(new_session).lower()}"
+                        ),
+                    )
+
+            except NotImplementedError as exc:
+                raise HTTPException(
+                    status_code=501,
+                    detail={
+                        "error":
+                            "non_affinity_tools_unsupported",
+                    },
+                ) from exc
 
         response_id = (
             f"chatcmpl-{uuid.uuid4().hex}"

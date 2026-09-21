@@ -1125,3 +1125,98 @@ def test_generation_wait_timeout_raises_typed_error(
         assert page.waits == [17]
 
     asyncio.run(run())
+
+
+def test_browser_non_affinity_tools_use_external_tool_bridge():
+    from types import SimpleNamespace
+
+    class FakePage:
+        async def title(self):
+            return "ChatGPT"
+
+    class ToolBackend(BrowserBackend):
+        def __init__(self, provider_settings):
+            super().__init__(provider_settings)
+            self.page = FakePage()
+            self.prompts = []
+
+        async def _ensure_page(self):
+            return self.page
+
+        async def _apply_preferences(
+            self,
+            page,
+            model,
+            level,
+        ):
+            return None
+
+        async def _execute_browser_turn(
+            self,
+            page,
+            prompt,
+        ):
+            self.prompts.append(prompt)
+
+            return SimpleNamespace(
+                text=(
+                    "<<<HERMES_EXTERNAL_TOOL_CALLS>>>\n"
+                    '{"calls":[{"name":"worker_list",'
+                    '"arguments":{}}]}\n'
+                    "<<<END_HERMES_EXTERNAL_TOOL_CALLS>>>"
+                ),
+                input_method="fill",
+                composer_wait_ms=1.0,
+                input_ms=2.0,
+                submit_ms=3.0,
+                generation_ms=4.0,
+                extraction_ms=5.0,
+            )
+
+    async def run():
+        backend = ToolBackend(settings())
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "worker_list",
+                    "description": "List workers.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            }
+        ]
+
+        result = await backend.complete_with_tools(
+            [
+                ChatMessage(
+                    role="user",
+                    content="List workers.",
+                )
+            ],
+            model="gpt-a",
+            level="high",
+            tools=tools,
+            tool_choice="auto",
+            parallel_tool_calls=True,
+        )
+
+        assert len(backend.prompts) == 1
+        assert "EXTERNAL TOOL" in backend.prompts[0]
+        assert "worker_list" in backend.prompts[0]
+
+        assert result.text == ""
+        assert len(result.tool_calls) == 1
+        assert (
+            result.tool_calls[0].function.name
+            == "worker_list"
+        )
+        assert (
+            result.tool_calls[0].function.arguments
+            == "{}"
+        )
+
+    asyncio.run(run())
