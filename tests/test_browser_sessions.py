@@ -1058,3 +1058,70 @@ def test_browser_complete_uses_shared_turn_executor():
         assert result.level == "high"
 
     asyncio.run(run())
+
+
+def test_generation_wait_timeout_raises_typed_error(
+    monkeypatch,
+):
+    import chatgpt_web_provider.backends as backends_module
+
+    from chatgpt_web_provider.backends import (
+        ChatGPTGenerationTimeoutError,
+    )
+
+    class FakeStop:
+        async def count(self):
+            return 1
+
+    class FakePage:
+        def __init__(self):
+            self.waits = []
+
+        def locator(self, selector):
+            return FakeStop()
+
+        async def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    async def run():
+        provider_settings = settings()
+        provider_settings.generation_timeout_seconds = 2
+        provider_settings.generation_poll_ms = 17
+
+        backend = BrowserBackend(provider_settings)
+        page = FakePage()
+
+        # deadline creation, first while check, second while check
+        clock = iter(
+            [
+                100.0,
+                100.0,
+                103.0,
+            ]
+        )
+
+        class FakeTime:
+            def monotonic(self):
+                return next(clock)
+
+        # Replace the module-local time reference rather than modifying
+        # time.monotonic globally; asyncio itself uses the real monotonic
+        # clock during event-loop shutdown.
+        monkeypatch.setattr(
+            backends_module,
+            "time",
+            FakeTime(),
+        )
+
+        try:
+            await backend._wait_until_idle(page)
+        except ChatGPTGenerationTimeoutError as exc:
+            assert exc.timeout_seconds == 2
+        else:
+            raise AssertionError(
+                "generation timeout was silently ignored"
+            )
+
+        assert page.waits == [17]
+
+    asyncio.run(run())

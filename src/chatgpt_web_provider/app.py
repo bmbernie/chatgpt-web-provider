@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import (
     Backend,
+    ChatGPTGenerationTimeoutError,
     ChatGPTUIRateLimitError,
     build_backend,
 )
@@ -242,6 +243,26 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     )
     app.state.settings = settings
     app.state.backend = backend
+
+    @app.exception_handler(ChatGPTGenerationTimeoutError)
+    async def chatgpt_generation_timeout(
+        _: Request,
+        exc: ChatGPTGenerationTimeoutError,
+    ):
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": (
+                        "ChatGPT generation did not finish before "
+                        "the configured timeout"
+                    ),
+                    "type": "generation_timeout_error",
+                    "code": "chatgpt_generation_timeout",
+                    "timeout_seconds": exc.timeout_seconds,
+                }
+            },
+        )
 
     @app.exception_handler(ChatGPTUIRateLimitError)
     async def chatgpt_ui_rate_limit(

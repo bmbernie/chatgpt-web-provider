@@ -923,3 +923,59 @@ def test_chatgpt_ui_rate_limit_retry_after_is_configurable():
 
     assert response.status_code == 429
     assert response.headers["retry-after"] == "300"
+
+
+def test_generation_timeout_maps_to_http_504():
+    from chatgpt_web_provider.backends import (
+        ChatGPTGenerationTimeoutError,
+        MockBackend,
+    )
+
+    class GenerationTimeoutBackend(MockBackend):
+        async def complete(
+            self,
+            messages,
+            model=None,
+            new_session=False,
+            level=None,
+        ):
+            raise ChatGPTGenerationTimeoutError(
+                timeout_seconds=240,
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=GenerationTimeoutBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": settings.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 504
+    assert "retry-after" not in response.headers
+
+    error = response.json()["error"]
+
+    assert error["type"] == "generation_timeout_error"
+    assert error["code"] == "chatgpt_generation_timeout"
+    assert error["timeout_seconds"] == 240

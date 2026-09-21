@@ -75,6 +75,22 @@ class ChatGPTUIRateLimitError(RuntimeError):
         )
 
 
+class ChatGPTGenerationTimeoutError(RuntimeError):
+    """ChatGPT generation exceeded the configured completion deadline."""
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: int,
+    ):
+        self.timeout_seconds = timeout_seconds
+
+        super().__init__(
+            "ChatGPT generation did not finish before "
+            "the configured timeout"
+        )
+
+
 @dataclass(slots=True)
 class _BrowserSession:
     session_id: str
@@ -2299,6 +2315,12 @@ class BrowserBackend(Backend):
             "browser_generation_wait_timeout "
             "timeout_seconds=%d",
             self.settings.generation_timeout_seconds,
+        )
+
+        raise ChatGPTGenerationTimeoutError(
+            timeout_seconds=(
+                self.settings.generation_timeout_seconds
+            ),
         )
 
     async def _start_new_session(self, page) -> None:  # pragma: no cover - browser integration
