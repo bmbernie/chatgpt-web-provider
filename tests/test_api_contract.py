@@ -1246,3 +1246,58 @@ def test_browser_operation_error_maps_to_http_502():
     assert error["code"] == "chatgpt_browser_operation_failed"
     assert error["phase"] == "submit"
     assert error["operation"] == "send_button_ready"
+
+
+def test_browser_login_required_maps_to_http_503():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserLoginRequiredError,
+        MockBackend,
+    )
+
+    class LoginRequiredBackend(MockBackend):
+        async def complete(
+            self,
+            messages,
+            model=None,
+            new_session=False,
+            level=None,
+        ):
+            raise ChatGPTBrowserLoginRequiredError(
+                phase="non_affinity_completion",
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=LoginRequiredBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": settings.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 503
+
+    error = response.json()["error"]
+
+    assert error["type"] == "service_unavailable_error"
+    assert error["code"] == "chatgpt_browser_login_required"
+    assert error["phase"] == "non_affinity_completion"

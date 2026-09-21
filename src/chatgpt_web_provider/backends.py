@@ -81,6 +81,21 @@ class ChatGPTUIRateLimitError(RuntimeError):
         )
 
 
+class ChatGPTBrowserLoginRequiredError(RuntimeError):
+    """The persistent ChatGPT browser profile requires authentication."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+    ):
+        self.phase = phase
+
+        super().__init__(
+            "ChatGPT browser profile is not logged in"
+        )
+
+
 class ChatGPTBrowserOperationError(RuntimeError):
     """A required ChatGPT Web UI operation could not be completed."""
 
@@ -340,6 +355,26 @@ class BrowserBackend(Backend):
         self._playwright = None
         self._context = None
         self._page = None
+
+    @staticmethod
+    async def _raise_if_browser_login_required(
+        page,
+        *,
+        phase: str,
+    ) -> None:
+        title = await page.title()
+
+        if "log in" not in title.lower():
+            return
+
+        logger.warning(
+            "chatgpt_browser_login_required phase=%s",
+            phase,
+        )
+
+        raise ChatGPTBrowserLoginRequiredError(
+            phase=phase,
+        )
 
     @staticmethod
     async def _raise_if_ui_rate_limited(
@@ -1130,10 +1165,10 @@ class BrowserBackend(Backend):
                 timeout=self.settings.navigation_timeout_ms,
             )
 
-            if "log in" in (await page.title()).lower():
-                raise RuntimeError(
-                    "ChatGPT browser profile is not logged in"
-                )
+            await self._raise_if_browser_login_required(
+                page,
+                phase="session_create",
+            )
 
             # This page/conversation now belongs to this provider session.
             await self._start_policy_session(
@@ -1435,10 +1470,10 @@ class BrowserBackend(Backend):
             len(prompt),
         )
 
-        if "log in" in (await page.title()).lower():
-            raise RuntimeError(
-                "ChatGPT browser profile is not logged in"
-            )
+        await self._raise_if_browser_login_required(
+            page,
+            phase="pinned_completion",
+        )
 
         turn = await self._execute_browser_turn(
             page,
@@ -1564,11 +1599,10 @@ class BrowserBackend(Backend):
                 ensure_page_ms = (time.perf_counter() - phase_started) * 1000
 
                 phase = "auth_check"
-                if "log in" in (await page.title()).lower():
-                    raise RuntimeError(
-                        "ChatGPT browser profile is not logged in; "
-                        "run setup with a visible browser first"
-                    )
+                await self._raise_if_browser_login_required(
+                    page,
+                    phase="non_affinity_completion",
+                )
 
                 new_session_ms = 0.0
                 if new_session:

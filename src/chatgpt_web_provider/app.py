@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from .backends import (
     Backend,
+    ChatGPTBrowserLoginRequiredError,
     ChatGPTBrowserOperationError,
     ChatGPTBrowserStateError,
     ChatGPTGenerationTimeoutError,
@@ -245,6 +246,25 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     )
     app.state.settings = settings
     app.state.backend = backend
+
+    @app.exception_handler(ChatGPTBrowserLoginRequiredError)
+    async def chatgpt_browser_login_required(
+        _: Request,
+        exc: ChatGPTBrowserLoginRequiredError,
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": (
+                        "ChatGPT browser profile requires login"
+                    ),
+                    "type": "service_unavailable_error",
+                    "code": "chatgpt_browser_login_required",
+                    "phase": exc.phase,
+                }
+            },
+        )
 
     @app.exception_handler(ChatGPTBrowserOperationError)
     async def chatgpt_browser_operation_error(

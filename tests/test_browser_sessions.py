@@ -1768,3 +1768,39 @@ def test_submit_ready_timeout_is_browser_operation_error():
             )
 
     asyncio.run(run())
+
+
+def test_browser_login_state_check_detects_logged_out_profile():
+    from chatgpt_web_provider.backends import (
+        ChatGPTBrowserLoginRequiredError,
+    )
+
+    class LoggedOutPage:
+        async def title(self):
+            return "Log in - ChatGPT"
+
+    class LoggedInPage:
+        async def title(self):
+            return "ChatGPT"
+
+    async def run():
+        await BrowserBackend._raise_if_browser_login_required(
+            LoggedInPage(),
+            phase="test",
+        )
+
+        try:
+            await BrowserBackend._raise_if_browser_login_required(
+                LoggedOutPage(),
+                phase="test",
+            )
+
+        except ChatGPTBrowserLoginRequiredError as exc:
+            assert exc.phase == "test"
+
+        else:
+            raise AssertionError(
+                "logged-out browser profile was not detected"
+            )
+
+    asyncio.run(run())
