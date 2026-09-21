@@ -1348,6 +1348,37 @@ class BrowserBackend(Backend):
             )
             raise
 
+    @staticmethod
+    def _browser_completion_result(
+        response_text: str,
+        *,
+        model: str,
+        level: str | None,
+        tools: list[dict] | None,
+        parallel_tool_calls: bool,
+    ) -> CompletionResult:
+        """Convert one browser response into provider completion semantics."""
+        tool_calls = (
+            parse_tool_calls(
+                response_text,
+                tools,
+                parallel_tool_calls=parallel_tool_calls,
+            )
+            if tools
+            else None
+        )
+
+        return CompletionResult(
+            text=(
+                ""
+                if tool_calls
+                else response_text
+            ),
+            model=model,
+            level=level,
+            tool_calls=tool_calls or [],
+        )
+
     async def _complete_pinned_session(
         self,
         session: _BrowserSession,
@@ -1408,37 +1439,26 @@ class BrowserBackend(Backend):
             (time.perf_counter() - started) * 1000,
         )
 
-        tool_calls = (
-            parse_tool_calls(
-                response_text,
-                tools,
-                parallel_tool_calls=parallel_tool_calls,
-            )
-            if tools
-            else None
+        result = self._browser_completion_result(
+            response_text,
+            model=session.model,
+            level=session.level,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
         )
 
         logger.info(
             "browser_external_tool_result "
             "session_id=%s tool_calls=%d names=%s",
             session.session_id,
-            len(tool_calls or []),
+            len(result.tool_calls),
             ",".join(
                 call.function.name
-                for call in (tool_calls or [])
+                for call in result.tool_calls
             ) or "-",
         )
 
-        return CompletionResult(
-            text=(
-                ""
-                if tool_calls
-                else response_text
-            ),
-            model=session.model,
-            level=session.level,
-            tool_calls=tool_calls or [],
-        )
+        return result
 
     async def complete(
         self,
@@ -1581,37 +1601,26 @@ class BrowserBackend(Backend):
                     total_ms,
                 )
 
-                tool_calls = (
-                    parse_tool_calls(
-                        text,
-                        tools,
-                        parallel_tool_calls=parallel_tool_calls,
-                    )
-                    if tools
-                    else []
+                result = self._browser_completion_result(
+                    text,
+                    model=selected_model,
+                    level=level,
+                    tools=tools,
+                    parallel_tool_calls=parallel_tool_calls,
                 )
 
                 if tools:
                     logger.info(
                         "browser_external_tool_result "
                         "session_id=- tool_calls=%d names=%s",
-                        len(tool_calls),
+                        len(result.tool_calls),
                         ",".join(
                             call.function.name
-                            for call in tool_calls
+                            for call in result.tool_calls
                         ) or "-",
                     )
 
-                return CompletionResult(
-                    text=(
-                        ""
-                        if tool_calls
-                        else text
-                    ),
-                    model=selected_model,
-                    level=level,
-                    tool_calls=tool_calls,
-                )
+                return result
 
             except Exception as exc:
                 total_ms = (time.perf_counter() - total_started) * 1000
