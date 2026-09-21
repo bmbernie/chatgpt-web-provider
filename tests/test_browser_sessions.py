@@ -1,8 +1,14 @@
 import asyncio
 
-from chatgpt_web_provider.backends import BrowserBackend
+from chatgpt_web_provider.backends import (
+    BrowserBackend,
+    _BrowserSession,
+)
 from chatgpt_web_provider.config import Settings
 from chatgpt_web_provider.models import ChatMessage, CompletionResult
+from chatgpt_web_provider.tool_bridge import (
+    tool_catalog_fingerprint,
+)
 
 
 class FakeBrowserSessionBackend(BrowserBackend):
@@ -1493,3 +1499,186 @@ def test_submit_prompt_closed_page_is_browser_state_error():
             )
 
     asyncio.run(run())
+
+
+def test_affinity_request_plan_selects_transcript_delta():
+    backend = BrowserBackend(settings())
+
+    first = ChatMessage(
+        role="user",
+        content="alpha",
+    )
+
+    assistant = ChatMessage(
+        role="assistant",
+        content="first response",
+    )
+
+    second = ChatMessage(
+        role="user",
+        content="beta",
+    )
+
+    session = _BrowserSession(
+        session_id="plan-delta",
+        model="gpt-a",
+        level="high",
+        state="ready",
+    )
+
+    session.logical_transcript = (
+        backend._message_signature(first),
+        backend._message_signature(assistant),
+    )
+
+    plan = backend._plan_affinity_request(
+        session,
+        [
+            first,
+            assistant,
+            second,
+        ],
+        tools=None,
+        tool_choice=None,
+        parallel_tool_calls=True,
+    )
+
+    assert plan.replay is False
+    assert plan.reset is False
+    assert plan.delta_start == 2
+    assert plan.inject_tool_catalog is False
+
+
+def test_affinity_request_plan_detects_replay():
+    backend = BrowserBackend(settings())
+
+    message = ChatMessage(
+        role="user",
+        content="alpha",
+    )
+
+    incoming = (
+        backend._message_signature(message),
+    )
+
+    session = _BrowserSession(
+        session_id="plan-replay",
+        model="gpt-a",
+        level="high",
+        state="ready",
+    )
+
+    session.last_request = incoming
+    session.last_result = CompletionResult(
+        text="cached",
+        model="gpt-a",
+        level="high",
+    )
+
+    plan = backend._plan_affinity_request(
+        session,
+        [message],
+        tools=None,
+        tool_choice=None,
+        parallel_tool_calls=True,
+    )
+
+    assert plan.replay is True
+
+
+def test_affinity_request_plan_resets_on_discontinuity():
+    backend = BrowserBackend(settings())
+
+    old = ChatMessage(
+        role="user",
+        content="old history",
+    )
+
+    new = ChatMessage(
+        role="user",
+        content="rewritten history",
+    )
+
+    session = _BrowserSession(
+        session_id="plan-reset",
+        model="gpt-a",
+        level="high",
+        state="ready",
+    )
+
+    session.logical_transcript = (
+        backend._message_signature(old),
+    )
+
+    plan = backend._plan_affinity_request(
+        session,
+        [new],
+        tools=None,
+        tool_choice=None,
+        parallel_tool_calls=True,
+    )
+
+    assert plan.reset is True
+    assert plan.delta_start == 0
+
+
+def test_affinity_request_plan_reinjects_tools_after_reset():
+    backend = BrowserBackend(settings())
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "worker_list",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        }
+    ]
+
+    fingerprint = tool_catalog_fingerprint(
+        tools,
+        tool_choice="auto",
+        parallel_tool_calls=True,
+    )
+
+    old = ChatMessage(
+        role="user",
+        content="old history",
+    )
+
+    new = ChatMessage(
+        role="user",
+        content="rewritten history",
+    )
+
+    session = _BrowserSession(
+        session_id="plan-tool-reset",
+        model="gpt-a",
+        level="high",
+        state="ready",
+    )
+
+    session.logical_transcript = (
+        backend._message_signature(old),
+    )
+
+    # Same catalog existed in the old browser conversation.
+    session.tool_catalog_fingerprint = fingerprint
+
+    plan = backend._plan_affinity_request(
+        session,
+        [new],
+        tools=tools,
+        tool_choice="auto",
+        parallel_tool_calls=True,
+    )
+
+    assert plan.reset is True
+    assert (
+        plan.requested_tool_fingerprint
+        == fingerprint
+    )
+    assert plan.inject_tool_catalog is True

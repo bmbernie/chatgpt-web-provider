@@ -133,6 +133,18 @@ class _BrowserSession:
     tool_catalog_fingerprint: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _AffinityRequestPlan:
+    """Deterministic decision for one affinity completion request."""
+
+    incoming: tuple[str, ...]
+    requested_tool_fingerprint: str | None
+    replay: bool
+    reset: bool
+    delta_start: int
+    inject_tool_catalog: bool
+
+
 class Backend(ABC):
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -644,6 +656,167 @@ class BrowserBackend(Backend):
                 if session.state == "busy":
                     session.state = "ready"
 
+    def _plan_affinity_request(
+        self,
+        session: _BrowserSession,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict] | None,
+        tool_choice,
+        parallel_tool_calls: bool,
+    ) -> _AffinityRequestPlan:
+        """Decide affinity behavior without mutating session or browser state."""
+        incoming = tuple(
+            self._message_signature(message)
+            for message in messages
+        )
+
+        requested_tool_fingerprint = (
+            tool_catalog_fingerprint(
+                tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+            )
+            if tools
+            else None
+        )
+
+        replay = (
+            session.last_request == incoming
+            and session.last_result is not None
+            and session.tool_catalog_fingerprint
+            == requested_tool_fingerprint
+        )
+
+        recorded = session.logical_transcript
+
+        extends_recorded = (
+            len(incoming) >= len(recorded)
+            and incoming[:len(recorded)] == recorded
+        )
+
+        reset = not extends_recorded
+
+        delta_start = (
+            len(recorded)
+            if extends_recorded
+            else 0
+        )
+
+        # A reset establishes a fresh browser conversation, so an
+        # available tool catalog must be seeded again even when its
+        # fingerprint matches the prior conversation.
+        inject_tool_catalog = bool(tools) and (
+            reset
+            or session.tool_catalog_fingerprint
+            != requested_tool_fingerprint
+        )
+
+        return _AffinityRequestPlan(
+            incoming=incoming,
+            requested_tool_fingerprint=(
+                requested_tool_fingerprint
+            ),
+            replay=replay,
+            reset=reset,
+            delta_start=delta_start,
+            inject_tool_catalog=inject_tool_catalog,
+        )
+
+    async def _reset_affinity_session(
+        self,
+        session: _BrowserSession,
+        *,
+        incoming_message_count: int,
+    ) -> None:
+        """Reset a pinned browser conversation after transcript discontinuity."""
+        await self._start_policy_session(
+            session.page,
+            session.conversation_policy,
+        )
+
+        await self._apply_preferences(
+            session.page,
+            session.model,
+            session.level,
+        )
+
+        session.logical_transcript = ()
+        session.last_request = None
+        session.last_result = None
+        session.tool_catalog_fingerprint = None
+
+        logger.info(
+            "browser_affinity_reset "
+            "session_id=%s reason=transcript_discontinuity "
+            "incoming_messages=%d",
+            session.session_id,
+            incoming_message_count,
+        )
+
+    @staticmethod
+    def _prepare_affinity_tool_catalog(
+        plan: _AffinityRequestPlan,
+        *,
+        tools: list[dict] | None,
+        tool_choice,
+        parallel_tool_calls: bool,
+    ) -> str | None:
+        """Render a tool catalog only when this browser conversation needs it."""
+        if not plan.inject_tool_catalog:
+            return None
+
+        assert tools
+
+        logger.info(
+            "browser_tool_catalog "
+            "available_tools=%d presented_tools=%d",
+            len(tools),
+            len(tools),
+        )
+
+        return render_tool_catalog(
+            tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+        )
+
+    def _commit_affinity_result(
+        self,
+        session: _BrowserSession,
+        plan: _AffinityRequestPlan,
+        result: CompletionResult,
+    ) -> None:
+        """Commit affinity state only after successful browser execution."""
+        assistant_message = ChatMessage(
+            role="assistant",
+            content=(
+                None
+                if result.tool_calls
+                else result.text
+            ),
+            tool_calls=(
+                result.tool_calls
+                if result.tool_calls
+                else None
+            ),
+        )
+
+        session.logical_transcript = (
+            plan.incoming
+            + (
+                self._message_signature(
+                    assistant_message
+                ),
+            )
+        )
+
+        session.last_request = plan.incoming
+        session.last_result = result
+        session.tool_catalog_fingerprint = (
+            plan.requested_tool_fingerprint
+        )
+
     async def complete_affinity_session(
         self,
         session_id: str,
@@ -662,6 +835,7 @@ class BrowserBackend(Backend):
         If the client history is rewritten or compacted, start a fresh
         ChatGPT conversation and seed it with the new transcript.
         """
+
         session = await self._get_browser_session(
             session_id
         )
@@ -676,104 +850,41 @@ class BrowserBackend(Backend):
                     f"{session_id}"
                 )
 
-            incoming = tuple(
-                self._message_signature(message)
-                for message in messages
+            plan = self._plan_affinity_request(
+                session,
+                messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
             )
 
-            requested_tool_fingerprint = (
-                tool_catalog_fingerprint(
-                    tools,
-                    tool_choice=tool_choice,
-                    parallel_tool_calls=parallel_tool_calls,
-                )
-                if tools
-                else None
-            )
-
-            # A transport retry of the exact same OpenAI request must
-            # not submit the user message to ChatGPT a second time.
-            if (
-                session.last_request == incoming
-                and session.last_result is not None
-                and session.tool_catalog_fingerprint
-                == requested_tool_fingerprint
-            ):
+            if plan.replay:
                 logger.info(
                     "browser_affinity_replay "
                     "session_id=%s messages=%d",
                     session_id,
                     len(messages),
                 )
+
+                assert session.last_result is not None
                 return session.last_result
 
-            recorded = session.logical_transcript
-
-            extends_recorded = (
-                len(incoming) >= len(recorded)
-                and incoming[:len(recorded)] == recorded
-            )
-
-            reset = False
-
-            if extends_recorded:
-                delta = messages[len(recorded):]
-
-            else:
-                # Hermes may compact or otherwise rewrite its logical
-                # transcript. The old browser conversation can no
-                # longer represent that context exactly, so establish
-                # a fresh ChatGPT conversation and seed it once with
-                # the incoming transcript.
-                reset = True
-
-                await self._start_policy_session(
-                    session.page,
-                    session.conversation_policy,
+            if plan.reset:
+                await self._reset_affinity_session(
+                    session,
+                    incoming_message_count=len(messages),
                 )
 
-                await self._apply_preferences(
-                    session.page,
-                    session.model,
-                    session.level,
-                )
+            delta = messages[plan.delta_start:]
 
-                session.logical_transcript = ()
-                session.last_request = None
-                session.last_result = None
-                session.tool_catalog_fingerprint = None
-
-                delta = messages
-
-                logger.info(
-                    "browser_affinity_reset "
-                    "session_id=%s reason=transcript_discontinuity "
-                    "incoming_messages=%d",
-                    session_id,
-                    len(messages),
-                )
-
-            tool_catalog_prompt = None
-
-            if (
-                tools
-                and session.tool_catalog_fingerprint
-                != requested_tool_fingerprint
-            ):
-                catalog_tools = tools
-
-                logger.info(
-                    "browser_tool_catalog "
-                    "available_tools=%d presented_tools=%d",
-                    len(tools),
-                    len(catalog_tools),
-                )
-
-                tool_catalog_prompt = render_tool_catalog(
-                    catalog_tools,
+            tool_catalog_prompt = (
+                self._prepare_affinity_tool_catalog(
+                    plan,
+                    tools=tools,
                     tool_choice=tool_choice,
                     parallel_tool_calls=parallel_tool_calls,
                 )
+            )
 
             if not delta and tool_catalog_prompt is None:
                 raise RuntimeError(
@@ -787,7 +898,7 @@ class BrowserBackend(Backend):
                 session_id,
                 len(messages),
                 len(delta),
-                str(reset).lower(),
+                str(plan.reset).lower(),
             )
 
             session.state = "busy"
@@ -811,38 +922,11 @@ class BrowserBackend(Backend):
                         delta,
                     )
 
-                assistant_message = ChatMessage(
-                    role="assistant",
-                    content=(
-                        None
-                        if result.tool_calls
-                        else result.text
-                    ),
-                    tool_calls=(
-                        result.tool_calls
-                        if result.tool_calls
-                        else None
-                    ),
+                self._commit_affinity_result(
+                    session,
+                    plan,
+                    result,
                 )
-
-                session.logical_transcript = (
-                    incoming
-                    + (
-                        self._message_signature(
-                            assistant_message
-                        ),
-                    )
-                )
-
-                session.last_request = incoming
-                session.last_result = result
-
-                if tools:
-                    session.tool_catalog_fingerprint = (
-                        requested_tool_fingerprint
-                    )
-                else:
-                    session.tool_catalog_fingerprint = None
 
                 return result
 
