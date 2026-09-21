@@ -1682,3 +1682,55 @@ def test_affinity_request_plan_reinjects_tools_after_reset():
         == fingerprint
     )
     assert plan.inject_tool_catalog is True
+
+
+def test_browser_health_does_not_expose_page_title():
+    class FakePage:
+        async def title(self):
+            return "Sensitive Conversation Title"
+
+    class HealthBackend(BrowserBackend):
+        async def _ensure_page(self):
+            return FakePage()
+
+    async def run():
+        backend = HealthBackend(settings())
+
+        result = await backend.health()
+
+        assert result == {
+            "ok": True,
+            "backend": "browser",
+            "logged_in_hint": True,
+        }
+
+        assert "title" not in result
+
+    asyncio.run(run())
+
+
+def test_browser_health_does_not_expose_exception_text():
+    class HealthBackend(BrowserBackend):
+        async def _ensure_page(self):
+            raise RuntimeError(
+                "profile=/home/b/private "
+                "token=secret-value"
+            )
+
+    async def run():
+        backend = HealthBackend(settings())
+
+        result = await backend.health()
+
+        assert result == {
+            "ok": False,
+            "backend": "browser",
+            "error": "browser backend unavailable",
+        }
+
+        rendered = str(result)
+
+        assert "/home/b/private" not in rendered
+        assert "secret-value" not in rendered
+
+    asyncio.run(run())

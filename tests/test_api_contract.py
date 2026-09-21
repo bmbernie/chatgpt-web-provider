@@ -1153,3 +1153,39 @@ def test_browser_state_error_maps_to_http_502():
     assert error["code"] == "chatgpt_browser_state_error"
     assert error["phase"] == "generation_wait"
     assert error["operation"] == "stop_control_count"
+
+
+def test_public_health_does_not_expose_backend_diagnostics():
+    from chatgpt_web_provider.backends import MockBackend
+
+    class FailingHealthBackend(MockBackend):
+        async def health(self):
+            return {
+                "ok": False,
+                "backend": "browser",
+                "error": "browser backend unavailable",
+            }
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+    )
+
+    backend = FailingHealthBackend(settings)
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=backend,
+        )
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["ok"] is False
+    assert data["error"] == "browser backend unavailable"
+    assert "title" not in data

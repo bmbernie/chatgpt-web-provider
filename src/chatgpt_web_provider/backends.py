@@ -1643,9 +1643,27 @@ class BrowserBackend(Backend):
         try:
             page = await self._ensure_page()
             title = await page.title()
-            return {"ok": True, "backend": "browser", "title": title, "logged_in_hint": "log in" not in title.lower()}
+
+            return {
+                "ok": True,
+                "backend": "browser",
+                "logged_in_hint": (
+                    "log in" not in title.lower()
+                ),
+            }
+
         except Exception as exc:
-            return {"ok": False, "backend": "browser", "error": str(exc)}
+            logger.warning(
+                "browser_health_check_failed "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+            return {
+                "ok": False,
+                "backend": "browser",
+                "error": "browser backend unavailable",
+            }
 
     async def _apply_preferences(
         self,
