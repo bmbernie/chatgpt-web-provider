@@ -301,11 +301,14 @@ class BrowserBackend(Backend):
         page,
         composer,
         text: str,
+        *,
+        inline_fill_max_chars: int,
+        clipboard_chunk_size: int,
     ) -> str:
         """Write prompt text without making large contenteditable fills stall."""
 
         # locator.fill() is simple and reliable for ordinary prompts.
-        if len(text) < 16_384:
+        if len(text) < inline_fill_max_chars:
             await composer.fill(text)
             return "fill"
 
@@ -317,10 +320,13 @@ class BrowserBackend(Backend):
         # into small paste events so the content remains inline in the
         # composer while retaining clipboard-paste performance.
         try:
-            chunk_size = 4_096
             chunks = [
-                text[offset:offset + chunk_size]
-                for offset in range(0, len(text), chunk_size)
+                text[offset:offset + clipboard_chunk_size]
+                for offset in range(
+                    0,
+                    len(text),
+                    clipboard_chunk_size,
+                )
             ]
 
             await page.context.grant_permissions(
@@ -341,7 +347,7 @@ class BrowserBackend(Backend):
                 "chars=%d chunks=%d chunk_size=%d",
                 len(text),
                 len(chunks),
-                chunk_size,
+                clipboard_chunk_size,
             )
 
             for index, chunk in enumerate(chunks, start=1):
@@ -1095,7 +1101,7 @@ class BrowserBackend(Backend):
 
         input_method = (
             "clipboard_chunked_paste"
-            if len(prompt) >= 16_384
+            if len(prompt) >= self.settings.inline_fill_max_chars
             else "fill"
         )
 
@@ -1111,6 +1117,12 @@ class BrowserBackend(Backend):
                 page,
                 composer,
                 prompt,
+                inline_fill_max_chars=(
+                    self.settings.inline_fill_max_chars
+                ),
+                clipboard_chunk_size=(
+                    self.settings.clipboard_chunk_size
+                ),
             )
         except Exception as exc:
             await self._raise_if_ui_rate_limited(

@@ -817,6 +817,8 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             FakePage(small_events),
             FakeComposer(small_events),
             "hello",
+            inline_fill_max_chars=16_384,
+            clipboard_chunk_size=4_096,
         )
 
         assert method == "fill"
@@ -831,6 +833,8 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             FakePage(large_events),
             FakeComposer(large_events),
             large_text,
+            inline_fill_max_chars=16_384,
+            clipboard_chunk_size=4_096,
         )
 
         assert method == "clipboard_chunked_paste"

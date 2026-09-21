@@ -52,6 +52,14 @@ headless = true
 channel = ""
 enable_extensions = false
 
+[transport]
+# Prompts below this size use Playwright fill().
+inline_fill_max_chars = 16384
+
+# Larger prompts are pasted inline in chunks to avoid ChatGPT's
+# special large-paste attachment behavior.
+clipboard_chunk_size = 4096
+
 [timeouts]
 request_seconds = 300
 queue_seconds = 600

@@ -45,6 +45,10 @@ headless = false
 channel = "chrome"
 enable_extensions = true
 
+[transport]
+inline_fill_max_chars = 12000
+clipboard_chunk_size = 2048
+
 [timeouts]
 request_seconds = 111
 queue_seconds = 222
@@ -82,6 +86,9 @@ retry_after_seconds = 333
     assert settings.headless is False
     assert settings.browser_channel == "chrome"
     assert settings.enable_extensions is True
+
+    assert settings.inline_fill_max_chars == 12000
+    assert settings.clipboard_chunk_size == 2048
 
     assert settings.request_timeout_seconds == 111
     assert settings.queue_timeout_seconds == 222

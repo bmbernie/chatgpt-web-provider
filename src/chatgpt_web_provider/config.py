@@ -223,6 +223,8 @@ class Settings:
     headless: bool = True
     browser_channel: str | None = None
     enable_extensions: bool = False
+    inline_fill_max_chars: int = 16_384
+    clipboard_chunk_size: int = 4_096
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -265,6 +267,10 @@ class Settings:
         browser = _config_section(
             config,
             "browser",
+        )
+        transport = _config_section(
+            config,
+            "transport",
         )
         timeouts = _config_section(
             config,
@@ -513,6 +519,28 @@ class Settings:
             enable_extensions=_env_bool(
                 "CHATGPT_WEB_ENABLE_EXTENSIONS",
                 extensions_default,
+            ),
+            inline_fill_max_chars=int(
+                os.getenv(
+                    "CHATGPT_WEB_INLINE_FILL_MAX_CHARS",
+                    str(
+                        transport.get(
+                            "inline_fill_max_chars",
+                            16_384,
+                        )
+                    ),
+                )
+            ),
+            clipboard_chunk_size=int(
+                os.getenv(
+                    "CHATGPT_WEB_CLIPBOARD_CHUNK_SIZE",
+                    str(
+                        transport.get(
+                            "clipboard_chunk_size",
+                            4_096,
+                        )
+                    ),
+                )
             ),
             request_timeout_seconds=int(
                 os.getenv(
