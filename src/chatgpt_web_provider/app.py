@@ -11,7 +11,11 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
-from .backends import Backend, build_backend
+from .backends import (
+    Backend,
+    ChatGPTUIRateLimitError,
+    build_backend,
+)
 from .config import SESSION_POLICIES, Settings
 from .models import (
     ChatCompletionRequest,
@@ -238,6 +242,27 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     )
     app.state.settings = settings
     app.state.backend = backend
+
+    @app.exception_handler(ChatGPTUIRateLimitError)
+    async def chatgpt_ui_rate_limit(
+        _: Request,
+        exc: ChatGPTUIRateLimitError,
+    ):
+        return JSONResponse(
+            status_code=429,
+            headers={
+                "Retry-After":
+                    str(exc.retry_after_seconds),
+            },
+            content={
+                "error": {
+                    "message":
+                        "ChatGPT UI is temporarily rate limited",
+                    "type": "rate_limit_error",
+                    "code": "chatgpt_ui_rate_limited",
+                }
+            },
+        )
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception):

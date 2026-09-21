@@ -21,6 +21,23 @@ from .tool_bridge import (
 logger = logging.getLogger("uvicorn.error")
 
 
+class ChatGPTUIRateLimitError(RuntimeError):
+    """ChatGPT web UI is temporarily blocking interaction."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        retry_after_seconds: int = 60,
+    ):
+        self.phase = phase
+        self.retry_after_seconds = retry_after_seconds
+
+        super().__init__(
+            "ChatGPT UI is temporarily rate limited"
+        )
+
+
 @dataclass(slots=True)
 class _BrowserSession:
     session_id: str
@@ -178,6 +195,36 @@ class BrowserBackend(Backend):
         self._playwright = None
         self._context = None
         self._page = None
+
+    @staticmethod
+    async def _raise_if_ui_rate_limited(
+        page,
+        *,
+        phase: str,
+    ) -> None:
+        try:
+            modal = page.locator(
+                '[data-testid="modal-conversation-history-rate-limit"]'
+            )
+            visible = await modal.is_visible()
+        except Exception:
+            # Detection is advisory. If the page object or DOM shape
+            # cannot be inspected, preserve the original browser
+            # operation and let it report its own failure.
+            return
+
+        if not visible:
+            return
+
+        logger.warning(
+            "chatgpt_ui_rate_limited phase=%s",
+            phase,
+        )
+
+        raise ChatGPTUIRateLimitError(
+            phase=phase,
+            retry_after_seconds=60,
+        )
 
     async def _ensure_page(self):
         if self._page:
@@ -573,6 +620,11 @@ class BrowserBackend(Backend):
         """Start a fresh ChatGPT conversation under a pinned policy."""
         await self._start_new_session(page)
 
+        await self._raise_if_ui_rate_limited(
+            page,
+            phase="session_start",
+        )
+
         if conversation_policy == "regular":
             return
 
@@ -619,7 +671,19 @@ class BrowserBackend(Backend):
             state="visible",
             timeout=30_000,
         )
-        await toggle.click()
+        await BrowserBackend._raise_if_ui_rate_limited(
+            page,
+            phase="temporary_chat_toggle",
+        )
+
+        try:
+            await toggle.click()
+        except Exception:
+            await BrowserBackend._raise_if_ui_rate_limited(
+                page,
+                phase="temporary_chat_toggle",
+            )
+            raise
 
         await enabled.wait_for(
             state="visible",
@@ -653,7 +717,19 @@ class BrowserBackend(Backend):
             state="visible",
             timeout=10_000,
         )
-        await launcher.click()
+        await BrowserBackend._raise_if_ui_rate_limited(
+            page,
+            phase="personalization_menu",
+        )
+
+        try:
+            await launcher.click()
+        except Exception:
+            await BrowserBackend._raise_if_ui_rate_limited(
+                page,
+                phase="personalization_menu",
+            )
+            raise
 
         option = page.locator(
             '[role="menuitemradio"]'
@@ -781,15 +857,30 @@ class BrowserBackend(Backend):
                 "ChatGPT browser profile is not logged in"
             )
 
+        await self._raise_if_ui_rate_limited(
+            page,
+            phase="composer",
+        )
+
         composer = page.locator(
             "#prompt-textarea, div[contenteditable='true']"
         ).last
 
         await composer.wait_for(timeout=30_000)
 
+        await self._raise_if_ui_rate_limited(
+            page,
+            phase="composer_fill",
+        )
+
         try:
             await composer.fill(prompt)
         except Exception as exc:
+            await self._raise_if_ui_rate_limited(
+                page,
+                phase="composer_fill",
+            )
+
             raise RuntimeError(
                 f"ChatGPT composer fill failed "
                 f"({type(exc).__name__})"

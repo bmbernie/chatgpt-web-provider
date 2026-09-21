@@ -714,3 +714,43 @@ def test_affinity_tool_call_and_tool_result_preserve_delta_history():
         assert backend.calls == 2
 
     asyncio.run(run())
+
+
+def test_chatgpt_rate_limit_modal_is_detected():
+    from chatgpt_web_provider.backends import (
+        ChatGPTUIRateLimitError,
+    )
+
+    class FakeModal:
+        async def is_visible(self):
+            return True
+
+    class FakePage:
+        def __init__(self):
+            self.selectors = []
+
+        def locator(self, selector):
+            self.selectors.append(selector)
+            return FakeModal()
+
+    async def run():
+        page = FakePage()
+
+        try:
+            await BrowserBackend._raise_if_ui_rate_limited(
+                page,
+                phase="test",
+            )
+        except ChatGPTUIRateLimitError as exc:
+            assert exc.phase == "test"
+            assert exc.retry_after_seconds == 60
+        else:
+            raise AssertionError(
+                "visible rate-limit modal was ignored"
+            )
+
+        assert page.selectors == [
+            '[data-testid="modal-conversation-history-rate-limit"]'
+        ]
+
+    asyncio.run(run())
