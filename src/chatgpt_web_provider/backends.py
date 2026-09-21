@@ -20,6 +20,8 @@ from .tool_bridge import (
 
 logger = logging.getLogger("uvicorn.error")
 
+RESPONSE_BODY_FALLBACK_CHARS = 4_000
+
 
 class ChatGPTUIRateLimitError(RuntimeError):
     """ChatGPT web UI is temporarily blocking interaction."""
@@ -2202,12 +2204,24 @@ class BrowserBackend(Backend):
 
     async def _start_new_session(self, page) -> None:  # pragma: no cover - browser integration
         """Move ChatGPT to a fresh conversation before sending the prompt."""
-        await page.goto(self.settings.chatgpt_base_url, wait_until="domcontentloaded", timeout=self.settings.navigation_timeout_ms)
+        await page.goto(
+            self.settings.chatgpt_base_url,
+            wait_until="domcontentloaded",
+            timeout=self.settings.navigation_timeout_ms,
+        )
+
         await page.wait_for_timeout(
             self.settings.new_session_settle_ms
         )
-        if await page.locator("#prompt-textarea, div[contenteditable='true']").count() > 0:
+
+        if (
+            await page.locator(
+                "#prompt-textarea, div[contenteditable='true']"
+            ).count()
+            > 0
+        ):
             return
+
         for selector in (
             "[data-testid='create-new-chat-button']",
             "button[aria-label*='New chat']",
@@ -2215,24 +2229,46 @@ class BrowserBackend(Backend):
             "a[href='/']",
         ):
             candidate = page.locator(selector).first
+
             try:
-                if await candidate.count() > 0:
-                    await candidate.click(timeout=5_000)
-                    await page.wait_for_timeout(
-            self.settings.new_session_settle_ms
-        )
-                    return
+                if await candidate.count() == 0:
+                    continue
+
+                await candidate.click(
+                    timeout=self.settings.ui_action_timeout_ms
+                )
+
+                await page.wait_for_timeout(
+                    self.settings.new_session_settle_ms
+                )
+
+                return
+
             except Exception:
                 continue
 
-    @staticmethod
-    async def _extract_last_answer(page) -> str:  # pragma: no cover - browser integration
-        candidates = page.locator("[data-message-author-role='assistant']")
+    async def _extract_last_answer(self, page) -> str:  # pragma: no cover - browser integration
+        candidates = page.locator(
+            "[data-message-author-role='assistant']"
+        )
+
         count = await candidates.count()
+
         if count == 0:
-            body = await page.locator("body").inner_text(timeout=5000)
-            return body[-4000:]
-        return (await candidates.nth(count - 1).inner_text()).strip()
+            body = await page.locator("body").inner_text(
+                timeout=self.settings.extraction_timeout_ms
+            )
+
+            return body[
+                -RESPONSE_BODY_FALLBACK_CHARS:
+            ]
+
+        return (
+            await candidates.nth(
+                count - 1
+            ).inner_text()
+        ).strip()
+
 
 
 def build_backend(settings: Settings) -> Backend:

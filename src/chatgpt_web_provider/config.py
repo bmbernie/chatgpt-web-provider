@@ -243,6 +243,7 @@ class Settings:
     ui_action_timeout_ms: int = 3_000
     submit_ready_timeout_ms: int = 30_000
     submit_confirm_timeout_ms: int = 5_000
+    extraction_timeout_ms: int = 5_000
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
@@ -761,6 +762,17 @@ class Settings:
                     ),
                 )
             ),
+            extraction_timeout_ms=int(
+                os.getenv(
+                    "CHATGPT_WEB_EXTRACTION_TIMEOUT_MS",
+                    str(
+                        timeouts.get(
+                            "extraction_ms",
+                            5_000,
+                        )
+                    ),
+                )
+            ),
             request_timeout_seconds=int(
                 os.getenv(
                     "CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS",
@@ -872,6 +884,10 @@ class Settings:
         if self.submit_confirm_timeout_ms < 1:
             raise ValueError(
                 "CHATGPT_WEB_SUBMIT_CONFIRM_TIMEOUT_MS must be >= 1"
+            )
+        if self.extraction_timeout_ms < 1:
+            raise ValueError(
+                "CHATGPT_WEB_EXTRACTION_TIMEOUT_MS must be >= 1"
             )
         if not self.api_keys:
             raise ValueError("CHATGPT_WEB_API_KEYS must contain at least one API key")

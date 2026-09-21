@@ -89,6 +89,9 @@ ui_action_ms = 3000
 submit_ready_ms = 30000
 submit_confirm_ms = 5000
 
+# Response extraction fallback.
+extraction_ms = 5000
+
 [queue]
 max_concurrent_requests = 1
 

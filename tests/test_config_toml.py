@@ -69,6 +69,7 @@ picker_transition_ms = 5200
 ui_action_ms = 3100
 submit_ready_ms = 33000
 submit_confirm_ms = 5300
+extraction_ms = 5400
 
 [queue]
 max_concurrent_requests = 3
@@ -128,6 +129,7 @@ retry_after_seconds = 333
     assert settings.ui_action_timeout_ms == 3100
     assert settings.submit_ready_timeout_ms == 33000
     assert settings.submit_confirm_timeout_ms == 5300
+    assert settings.extraction_timeout_ms == 5400
 
     assert settings.request_timeout_seconds == 111
     assert settings.queue_timeout_seconds == 222
@@ -321,6 +323,10 @@ composer_ready_ms = 20000
         "CHATGPT_WEB_SUBMIT_CONFIRM_TIMEOUT_MS",
         "6300",
     )
+    monkeypatch.setenv(
+        "CHATGPT_WEB_EXTRACTION_TIMEOUT_MS",
+        "6400",
+    )
 
     settings = Settings.from_env(config)
 
@@ -346,3 +352,4 @@ composer_ready_ms = 20000
     assert settings.ui_action_timeout_ms == 4100
     assert settings.submit_ready_timeout_ms == 34000
     assert settings.submit_confirm_timeout_ms == 6300
+    assert settings.extraction_timeout_ms == 6400
