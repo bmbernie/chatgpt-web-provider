@@ -743,7 +743,6 @@ def test_chatgpt_rate_limit_modal_is_detected():
             )
         except ChatGPTUIRateLimitError as exc:
             assert exc.phase == "test"
-            assert exc.retry_after_seconds == 60
         else:
             raise AssertionError(
                 "visible rate-limit modal was ignored"
@@ -757,37 +756,63 @@ def test_chatgpt_rate_limit_modal_is_detected():
 
 
 def test_composer_writer_uses_fast_path_for_large_prompts():
+    class FakeContext:
+        def __init__(self, events):
+            self.events = events
+
+        async def grant_permissions(
+            self,
+            permissions,
+            origin=None,
+        ):
+            self.events.append(
+                (
+                    "grant_permissions",
+                    tuple(permissions),
+                    origin,
+                )
+            )
+
     class FakeKeyboard:
         def __init__(self, events):
             self.events = events
 
-        async def insert_text(self, text):
+        async def press(self, key):
             self.events.append(
-                ("insert_text", len(text))
+                ("keyboard_press", key)
+            )
+
+        async def insert_text(self, value):
+            self.events.append(
+                ("insert_text", len(value))
             )
 
     class FakePage:
         def __init__(self, events):
+            self.events = events
+            self.context = FakeContext(events)
             self.keyboard = FakeKeyboard(events)
+
+        async def evaluate(self, script, value):
+            self.events.append(
+                ("clipboard_write", len(value))
+            )
 
     class FakeComposer:
         def __init__(self, events):
             self.events = events
 
-        async def fill(self, text):
+        async def fill(self, value):
             self.events.append(
-                ("fill", len(text))
+                ("fill", len(value))
             )
 
         async def focus(self):
             self.events.append(("focus",))
 
-        async def press(self, key):
-            self.events.append(("press", key))
-
     async def run():
-        # Ordinary prompts retain the existing fill() path.
         small_events = []
+
         method = await BrowserBackend._write_composer_text(
             FakePage(small_events),
             FakeComposer(small_events),
@@ -799,7 +824,6 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             ("fill", 5),
         ]
 
-        # Large prompts avoid locator.fill().
         large_events = []
         large_text = "x" * 70_000
 
@@ -809,12 +833,113 @@ def test_composer_writer_uses_fast_path_for_large_prompts():
             large_text,
         )
 
-        assert method == "keyboard_insert_text"
-        assert large_events == [
-            ("focus",),
-            ("press", "Control+A"),
-            ("press", "Backspace"),
-            ("insert_text", 70_000),
+        assert method == "clipboard_chunked_paste"
+
+        chunks = [
+            large_text[offset:offset + 4_096]
+            for offset in range(0, len(large_text), 4_096)
         ]
 
+        expected = [
+            (
+                "grant_permissions",
+                (
+                    "clipboard-read",
+                    "clipboard-write",
+                ),
+                "https://chatgpt.com",
+            ),
+            ("focus",),
+            ("keyboard_press", "Control+A"),
+            ("keyboard_press", "Backspace"),
+        ]
+
+        for chunk in chunks:
+            expected.extend(
+                [
+                    ("clipboard_write", len(chunk)),
+                    ("keyboard_press", "Control+V"),
+                ]
+            )
+
+        assert len(chunks) == 18
+        assert sum(len(chunk) for chunk in chunks) == 70_000
+        assert large_events == expected
+
     asyncio.run(run())
+
+
+def test_browser_tool_reminder_keeps_tools_salient():
+    def tool(name):
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "parameters": {"type": "object"},
+            },
+        }
+
+    gateway_tools = [
+        tool("tool_search"),
+        tool("tool_describe"),
+        tool("tool_call"),
+    ]
+
+    reminder = BrowserBackend._browser_tool_reminder(
+        gateway_tools
+    )
+
+    assert "tool_search" in reminder
+    assert "tool_describe" in reminder
+    assert "tool_call" in reminder
+
+    direct = BrowserBackend._browser_tool_reminder(
+        [tool("mcp__worker_broker__worker_list")]
+    )
+
+    assert "external tools listed above" in direct
+    assert "call the matching tool" in direct
+    assert "actual tool call reports failure" in direct
+
+    assert BrowserBackend._browser_tool_reminder(None) == ""
+    assert BrowserBackend._browser_tool_reminder([]) == ""
+
+
+def test_browser_host_bridge_context_for_developer_messages():
+    developer_messages = [
+        ChatMessage(
+            role="developer",
+            content="You are Hermes Agent.",
+        ),
+        ChatMessage(
+            role="user",
+            content="list workers",
+        ),
+    ]
+
+    bridge = BrowserBackend._browser_host_bridge_context(
+        developer_messages
+    )
+
+    assert "HOST BRIDGE CONTEXT" in bridge
+    assert "reasoning backend for a Hermes Agent host" in bridge
+    assert "not the native ChatGPT web UI" in bridge
+    assert "external tool catalog" in bridge
+    assert "authoritative for host-tool availability" in bridge
+
+    user_only = [
+        ChatMessage(
+            role="user",
+            content="hello",
+        ),
+    ]
+
+    assert (
+        BrowserBackend._browser_host_bridge_context(user_only)
+        == ""
+    )
+
+    assert (
+        BrowserBackend._browser_host_bridge_context([])
+        == ""
+    )

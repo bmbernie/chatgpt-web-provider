@@ -835,7 +835,6 @@ def test_chatgpt_ui_rate_limit_maps_to_http_429():
         ):
             raise ChatGPTUIRateLimitError(
                 phase="composer",
-                retry_after_seconds=60,
             )
 
     settings = Settings(
@@ -867,9 +866,60 @@ def test_chatgpt_ui_rate_limit_maps_to_http_429():
     )
 
     assert response.status_code == 429
-    assert response.headers["retry-after"] == "60"
+    assert "retry-after" not in response.headers
 
     assert (
         response.json()["error"]["code"]
         == "chatgpt_ui_rate_limited"
     )
+
+
+def test_chatgpt_ui_rate_limit_retry_after_is_configurable():
+    from chatgpt_web_provider.backends import (
+        ChatGPTUIRateLimitError,
+        MockBackend,
+    )
+
+    class RateLimitedBackend(MockBackend):
+        async def complete(
+            self,
+            messages,
+            model=None,
+            new_session=False,
+            level=None,
+        ):
+            raise ChatGPTUIRateLimitError(
+                phase="composer",
+            )
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        ui_rate_limit_retry_after_seconds=300,
+    )
+
+    client = TestClient(
+        create_app(
+            settings,
+            backend=RateLimitedBackend(settings),
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer test-token",
+        },
+        json={
+            "model": settings.model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "300"

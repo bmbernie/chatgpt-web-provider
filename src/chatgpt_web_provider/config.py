@@ -76,6 +76,7 @@ class Settings:
     request_timeout_seconds: int = 300
     max_concurrent_requests: int = 1
     queue_timeout_seconds: int = 600
+    ui_rate_limit_retry_after_seconds: int | None = None
     session_policy: str = DEFAULT_SESSION_POLICY
 
     def __post_init__(self) -> None:
@@ -99,6 +100,17 @@ class Settings:
         if model_id not in available_models:
             available_models.insert(0, model_id)
         available_levels = _csv(os.getenv("CHATGPT_WEB_LEVELS")) or ["auto", "fast", "standard", "high"]
+        retry_after_raw = os.getenv(
+            "CHATGPT_WEB_UI_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        )
+
+        ui_rate_limit_retry_after_seconds = (
+            int(retry_after_raw)
+            if retry_after_raw
+            and retry_after_raw.strip()
+            else None
+        )
+
         return cls(
             api_keys=_csv(os.getenv("CHATGPT_WEB_API_KEYS")),
             backend=os.getenv("CHATGPT_WEB_BACKEND", "mock").strip().lower() or "mock",
@@ -117,6 +129,9 @@ class Settings:
             request_timeout_seconds=int(os.getenv("CHATGPT_WEB_REQUEST_TIMEOUT_SECONDS", "300")),
             max_concurrent_requests=int(os.getenv("CHATGPT_WEB_MAX_CONCURRENT_REQUESTS", "1")),
             queue_timeout_seconds=int(os.getenv("CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS", "600")),
+            ui_rate_limit_retry_after_seconds=(
+                ui_rate_limit_retry_after_seconds
+            ),
             session_policy=(
                 os.getenv(
                     "CHATGPT_WEB_SESSION_POLICY",
@@ -141,6 +156,15 @@ class Settings:
             raise ValueError("CHATGPT_WEB_MAX_CONCURRENT_REQUESTS must be >= 1")
         if self.queue_timeout_seconds < 1:
             raise ValueError("CHATGPT_WEB_QUEUE_TIMEOUT_SECONDS must be >= 1")
+
+        if (
+            self.ui_rate_limit_retry_after_seconds is not None
+            and self.ui_rate_limit_retry_after_seconds < 1
+        ):
+            raise ValueError(
+                "CHATGPT_WEB_UI_RATE_LIMIT_RETRY_AFTER_SECONDS "
+                "must be >= 1 when configured"
+            )
 
     def model_label(self, model: str) -> str:
         return self.model_labels.get(model, model)

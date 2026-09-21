@@ -248,12 +248,19 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
         _: Request,
         exc: ChatGPTUIRateLimitError,
     ):
+        headers = {}
+
+        if (
+            settings.ui_rate_limit_retry_after_seconds
+            is not None
+        ):
+            headers["Retry-After"] = str(
+                settings.ui_rate_limit_retry_after_seconds
+            )
+
         return JSONResponse(
             status_code=429,
-            headers={
-                "Retry-After":
-                    str(exc.retry_after_seconds),
-            },
+            headers=headers,
             content={
                 "error": {
                     "message":

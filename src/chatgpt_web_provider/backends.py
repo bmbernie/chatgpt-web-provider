@@ -28,10 +28,8 @@ class ChatGPTUIRateLimitError(RuntimeError):
         self,
         *,
         phase: str,
-        retry_after_seconds: int = 60,
     ):
         self.phase = phase
-        self.retry_after_seconds = retry_after_seconds
 
         super().__init__(
             "ChatGPT UI is temporarily rate limited"
@@ -223,7 +221,79 @@ class BrowserBackend(Backend):
 
         raise ChatGPTUIRateLimitError(
             phase=phase,
-            retry_after_seconds=60,
+        )
+
+    @staticmethod
+    def _browser_host_bridge_context(
+        messages: list[ChatMessage],
+    ) -> str:
+        """Disambiguate Hermes host context from the ChatGPT web backend."""
+
+        if not any(
+            message.role == "developer"
+            for message in messages
+        ):
+            return ""
+
+        return (
+            "SYSTEM:\n"
+            "HOST BRIDGE CONTEXT:\n"
+            "You are the reasoning backend for a Hermes Agent host. "
+            "The DEVELOPER message below contains policy and runtime "
+            "context for the Hermes host agent you are driving. "
+            "References there to 'you', Hermes Agent, runtime tools, "
+            "or tool availability describe the host agent, not the "
+            "native ChatGPT web UI.\n"
+            "The external tool catalog supplied with this request is "
+            "authoritative for host-tool availability. A listed "
+            "external tool is available even though it is not a native "
+            "ChatGPT UI tool. When the user's request requires a listed "
+            "tool, use the external tool-call protocol supplied by the "
+            "provider instead of reporting that the tool is unavailable."
+        )
+
+    @staticmethod
+    def _browser_tool_reminder(
+        tools: list[dict] | None,
+    ) -> str:
+        if not tools:
+            return ""
+
+        available_names = {
+            function.get("name")
+            for tool in tools
+            if isinstance(tool, dict)
+            and isinstance(
+                function := tool.get("function"),
+                dict,
+            )
+            and isinstance(function.get("name"), str)
+        }
+
+        gateway_names = {
+            "tool_search",
+            "tool_describe",
+            "tool_call",
+        }
+
+        if gateway_names.issubset(available_names):
+            return (
+                "EXTERNAL TOOL REMINDER:\n"
+                "Hermes host tools remain available. "
+                "When a requested capability is not directly visible, "
+                "use tool_search, tool_describe, and tool_call to "
+                "discover and invoke it. Do not report a tool or "
+                "server as unavailable before attempting that path."
+            )
+
+        return (
+            "EXTERNAL TOOL REMINDER:\n"
+            "The external tools listed above are available through "
+            "the Hermes host. When the user explicitly asks for an "
+            "operation provided by one of them, call the matching "
+            "tool instead of answering that it is unavailable. "
+            "Return normal prose only after the required tool work "
+            "has completed or an actual tool call reports failure."
         )
 
     @staticmethod
@@ -242,12 +312,93 @@ class BrowserBackend(Backend):
         # Large Hermes prompts can cause Playwright's contenteditable fill()
         # action to exceed its action timeout even though Chrome eventually
         # applies the text. Use the browser editing pipeline directly.
-        await composer.focus()
-        await composer.press("Control+A")
-        await composer.press("Backspace")
-        await page.keyboard.insert_text(text)
+        # Large single clipboard pastes can be converted by ChatGPT
+        # into a special "Pasted text" attachment. Split the payload
+        # into small paste events so the content remains inline in the
+        # composer while retaining clipboard-paste performance.
+        try:
+            chunk_size = 4_096
+            chunks = [
+                text[offset:offset + chunk_size]
+                for offset in range(0, len(text), chunk_size)
+            ]
 
-        return "keyboard_insert_text"
+            await page.context.grant_permissions(
+                [
+                    "clipboard-read",
+                    "clipboard-write",
+                ],
+                origin="https://chatgpt.com",
+            )
+
+            phase_started = time.perf_counter()
+            await composer.focus()
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+
+            logger.info(
+                "browser_composer_chunked_paste_start "
+                "chars=%d chunks=%d chunk_size=%d",
+                len(text),
+                len(chunks),
+                chunk_size,
+            )
+
+            for index, chunk in enumerate(chunks, start=1):
+                chunk_started = time.perf_counter()
+
+                await page.evaluate(
+                    """async (value) => {
+                        await navigator.clipboard.writeText(value);
+                    }""",
+                    chunk,
+                )
+
+                await page.keyboard.press("Control+V")
+
+                logger.info(
+                    "browser_composer_chunk_paste_complete "
+                    "chunk=%d/%d chars=%d elapsed_ms=%.1f",
+                    index,
+                    len(chunks),
+                    len(chunk),
+                    (time.perf_counter() - chunk_started) * 1000,
+                )
+
+            logger.info(
+                "browser_composer_chunked_paste_complete "
+                "chars=%d chunks=%d elapsed_ms=%.1f",
+                len(text),
+                len(chunks),
+                (time.perf_counter() - phase_started) * 1000,
+            )
+
+            return "clipboard_chunked_paste"
+
+        except Exception as exc:
+            logger.warning(
+                "browser_composer_clipboard_failed "
+                "error_type=%s fallback=keyboard_insert_text",
+                type(exc).__name__,
+            )
+
+            # Preserve the known-working path if clipboard access is
+            # unavailable in this Chromium/session configuration.
+            await composer.focus()
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+
+            phase_started = time.perf_counter()
+            await page.keyboard.insert_text(text)
+
+            logger.info(
+                "browser_composer_insert_text_complete "
+                "chars=%d elapsed_ms=%.1f fallback=true",
+                len(text),
+                (time.perf_counter() - phase_started) * 1000,
+            )
+
+            return "keyboard_insert_text_fallback"
 
     async def _ensure_page(self):
         if self._page:
@@ -554,8 +705,17 @@ class BrowserBackend(Backend):
                 and session.tool_catalog_fingerprint
                 != requested_tool_fingerprint
             ):
+                catalog_tools = tools
+
+                logger.info(
+                    "browser_tool_catalog "
+                    "available_tools=%d presented_tools=%d",
+                    len(tools),
+                    len(catalog_tools),
+                )
+
                 tool_catalog_prompt = render_tool_catalog(
-                    tools,
+                    catalog_tools,
                     tool_choice=tool_choice,
                     parallel_tool_calls=parallel_tool_calls,
                 )
@@ -850,19 +1010,56 @@ class BrowserBackend(Backend):
                 f"{session.session_id}"
             )
 
-        prompt_parts = []
+        tool_catalog_text = (
+            "SYSTEM:\n" + tool_catalog_prompt
+            if tool_catalog_prompt
+            else ""
+        )
 
-        if tool_catalog_prompt:
-            prompt_parts.append(
-                "SYSTEM:\n" + tool_catalog_prompt
-            )
+        host_bridge_text = (
+            self._browser_host_bridge_context(messages)
+        )
 
-        if messages:
-            prompt_parts.append(
-                self._render_prompt(messages)
+        message_text = (
+            self._render_prompt(messages)
+            if messages
+            else ""
+        )
+
+        tool_reminder_text = (
+            self._browser_tool_reminder(tools)
+        )
+
+        # Keep the current transcript first. Put the lightweight
+        # reminder next and the complete external-tool catalog last,
+        # so its exact tool-call serialization protocol is closest
+        # to generation on catalog-bearing turns.
+        prompt_parts = [
+            part
+            for part in (
+                host_bridge_text,
+                message_text,
+                tool_reminder_text,
+                tool_catalog_text,
             )
+            if part
+        ]
 
         prompt = "\n\n".join(prompt_parts)
+
+        logger.info(
+            "browser_prompt_components "
+            "host_bridge_chars=%d "
+            "tool_catalog_chars=%d "
+            "message_chars=%d "
+            "tool_reminder_chars=%d "
+            "total_chars=%d",
+            len(host_bridge_text),
+            len(tool_catalog_text),
+            len(message_text),
+            len(tool_reminder_text),
+            len(prompt),
+        )
         started = time.perf_counter()
 
         logger.info(
@@ -897,7 +1094,7 @@ class BrowserBackend(Backend):
         )
 
         input_method = (
-            "keyboard_insert_text"
+            "clipboard_chunked_paste"
             if len(prompt) >= 16_384
             else "fill"
         )
@@ -957,6 +1154,17 @@ class BrowserBackend(Backend):
             )
             if tools
             else None
+        )
+
+        logger.info(
+            "browser_external_tool_result "
+            "session_id=%s tool_calls=%d names=%s",
+            session.session_id,
+            len(tool_calls or []),
+            ",".join(
+                call.function.name
+                for call in (tool_calls or [])
+            ) or "-",
         )
 
         return CompletionResult(
