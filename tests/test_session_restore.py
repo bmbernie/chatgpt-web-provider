@@ -690,3 +690,47 @@ def test_delete_session_removes_persisted_state(
             )
 
     asyncio.run(run())
+
+
+
+def test_browser_backend_start_loads_persisted_sessions(
+    tmp_path,
+):
+    async def run():
+        backend = BrowserBackend(
+            Settings(
+                backend="browser",
+                model_id="gpt-a",
+                available_models=["gpt-a"],
+                available_levels=["high"],
+                profile_dir=str(
+                    tmp_path / "chrome-profile"
+                ),
+            )
+        )
+
+        backend._session_store.upsert(
+            PersistedSession(
+                session_id="startup-restored",
+                model="gpt-a",
+                level="high",
+                conversation_policy="regular",
+                conversation_url=(
+                    "https://chatgpt.com/c/startup-restored"
+                ),
+            )
+        )
+
+        await backend.start()
+
+        session = await backend._get_browser_session(
+            "startup-restored"
+        )
+
+        assert session.state == "dormant"
+        assert session.page is None
+        assert session.conversation_url == (
+            "https://chatgpt.com/c/startup-restored"
+        )
+
+    asyncio.run(run())

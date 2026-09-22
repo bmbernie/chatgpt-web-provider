@@ -92,3 +92,38 @@ def test_server_notifies_after_uvicorn_startup(
         "listener-ready",
         "READY=1",
     ]
+
+
+from fastapi.testclient import TestClient
+
+from chatgpt_web_provider.app import create_app
+from chatgpt_web_provider.config import Settings
+
+
+def test_app_lifespan_starts_backend():
+    class StartTrackingBackend:
+        def __init__(self):
+            self.started = False
+
+        async def start(self):
+            self.started = True
+
+    backend = StartTrackingBackend()
+
+    settings = Settings(
+        api_keys=["test-token"],
+        backend="mock",
+        model_id="gpt-a",
+        available_models=["gpt-a"],
+        available_levels=["high"],
+    )
+
+    app = create_app(
+        settings,
+        backend=backend,
+    )
+
+    assert backend.started is False
+
+    with TestClient(app):
+        assert backend.started is True

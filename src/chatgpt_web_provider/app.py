@@ -7,6 +7,7 @@ import os
 import socket
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import uvicorn
@@ -286,10 +287,16 @@ def create_app(settings: Settings | None = None, backend: Backend | None = None)
     auth = _require_auth(settings)
     queue_sem = asyncio.Semaphore(settings.max_concurrent_requests)
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        await backend.start()
+        yield
+
     app = FastAPI(
         title="chatgpt-web-provider",
         version="0.1.0",
         description="OpenAI-compatible API facade for a browser-backed ChatGPT.com worker.",
+        lifespan=lifespan,
     )
     app.state.settings = settings
     app.state.backend = backend

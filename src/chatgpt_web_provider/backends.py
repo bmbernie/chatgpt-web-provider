@@ -184,6 +184,9 @@ class Backend(ABC):
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    async def start(self) -> None:
+        return None
+
     @abstractmethod
     async def complete(self, messages: list[ChatMessage], model: str | None = None, new_session: bool = False, level: str | None = None) -> CompletionResult:
         raise NotImplementedError
@@ -363,6 +366,9 @@ class BrowserBackend(Backend):
         self._playwright = None
         self._context = None
         self._page = None
+
+    async def start(self) -> None:
+        await self._load_persisted_sessions()
 
     @staticmethod
     async def _raise_if_browser_login_required(
