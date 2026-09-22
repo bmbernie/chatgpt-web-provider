@@ -1482,6 +1482,16 @@ class BrowserBackend(Backend):
 
         response_text = turn.text
 
+        page_url = getattr(page, "url", "")
+
+        if isinstance(page_url, str) and page_url:
+            logger.info(
+                "browser_session_conversation_url "
+                "session_id=%s url=%s",
+                session.session_id,
+                page_url,
+            )
+
         logger.info(
             "browser_session_request_complete session_id=%s "
             "model=%s level=%s messages=%d prompt_chars=%d "
