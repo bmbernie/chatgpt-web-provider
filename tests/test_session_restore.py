@@ -513,3 +513,180 @@ def test_dormant_session_restores_once_and_reuses_page(
         assert session.state == "ready"
 
     asyncio.run(run())
+
+
+
+def test_regular_session_url_is_persisted(
+    tmp_path,
+):
+    backend = BrowserBackend(
+        Settings(
+            backend="browser",
+            model_id="gpt-a",
+            available_models=["gpt-a"],
+            available_levels=["high"],
+            profile_dir=str(
+                tmp_path / "chrome-profile"
+            ),
+        )
+    )
+
+    session = _BrowserSession(
+        session_id="durable",
+        model="gpt-a",
+        level="high",
+        conversation_policy="regular",
+        state="ready",
+    )
+
+    url = "https://chatgpt.com/c/abc123"
+
+    backend._persist_regular_session_url(
+        session,
+        url,
+    )
+
+    assert session.conversation_url == url
+
+    assert backend._session_store.load() == {
+        "durable": PersistedSession(
+            session_id="durable",
+            model="gpt-a",
+            level="high",
+            conversation_policy="regular",
+            conversation_url=url,
+        )
+    }
+
+
+def test_temporary_session_url_is_not_persisted(
+    tmp_path,
+):
+    backend = BrowserBackend(
+        Settings(
+            backend="browser",
+            model_id="gpt-a",
+            available_models=["gpt-a"],
+            available_levels=["high"],
+            profile_dir=str(
+                tmp_path / "chrome-profile"
+            ),
+        )
+    )
+
+    session = _BrowserSession(
+        session_id="temporary",
+        model="gpt-a",
+        level="high",
+        conversation_policy="temporary_personalized",
+        state="ready",
+    )
+
+    backend._persist_regular_session_url(
+        session,
+        "https://chatgpt.com/c/temporary",
+    )
+
+    assert session.conversation_url is None
+    assert backend._session_store.load() == {}
+
+
+def test_invalid_conversation_url_is_not_persisted(
+    tmp_path,
+):
+    backend = BrowserBackend(
+        Settings(
+            backend="browser",
+            model_id="gpt-a",
+            available_models=["gpt-a"],
+            available_levels=["high"],
+            profile_dir=str(
+                tmp_path / "chrome-profile"
+            ),
+        )
+    )
+
+    session = _BrowserSession(
+        session_id="invalid",
+        model="gpt-a",
+        level="high",
+        conversation_policy="regular",
+        state="ready",
+    )
+
+    backend._persist_regular_session_url(
+        session,
+        "https://example.com/c/abc123",
+    )
+
+    assert session.conversation_url is None
+    assert backend._session_store.load() == {}
+
+
+def test_delete_session_removes_persisted_state(
+    tmp_path,
+):
+    async def run():
+        backend = BrowserBackend(
+            Settings(
+                backend="browser",
+                model_id="gpt-a",
+                available_models=["gpt-a"],
+                available_levels=["high"],
+                profile_dir=str(
+                    tmp_path / "chrome-profile"
+                ),
+            )
+        )
+
+        page = RestorePage()
+
+        session = _BrowserSession(
+            session_id="delete-me",
+            model="gpt-a",
+            level="high",
+            conversation_policy="regular",
+            page=page,
+            state="ready",
+            conversation_url=(
+                "https://chatgpt.com/c/delete-me"
+            ),
+        )
+
+        backend._sessions[
+            session.session_id
+        ] = session
+
+        backend._session_store.upsert(
+            PersistedSession(
+                session_id=session.session_id,
+                model=session.model,
+                level=session.level,
+                conversation_policy=(
+                    session.conversation_policy
+                ),
+                conversation_url=(
+                    session.conversation_url
+                ),
+            )
+        )
+
+        await backend.delete_session(
+            session.session_id
+        )
+
+        assert page.closed is True
+        assert backend._session_store.load() == {}
+
+        try:
+            await backend._get_browser_session(
+                session.session_id
+            )
+        except KeyError:
+            pass
+        else:
+            raise AssertionError(
+                "deleted session remained registered"
+            )
+
+    asyncio.run(run())

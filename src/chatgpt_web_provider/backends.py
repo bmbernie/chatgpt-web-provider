@@ -55,7 +55,7 @@ from .chatgpt_ui import (
     aria_label_button,
 )
 from .models import ChatMessage, CompletionResult
-from .session_store import SessionStore
+from .session_store import PersistedSession, SessionStore
 from .tool_bridge import (
     parse_tool_calls,
     render_tool_catalog,
@@ -705,6 +705,10 @@ class BrowserBackend(Backend):
                 await self._close_pinned_session_page(
                     session.page
                 )
+
+            self._session_store.delete(
+                session_id
+            )
 
             async with self._sessions_lock:
                 current = self._sessions.get(session_id)
@@ -1574,6 +1578,41 @@ class BrowserBackend(Backend):
             tool_calls=tool_calls or [],
         )
 
+    def _persist_regular_session_url(
+        self,
+        session: _BrowserSession,
+        conversation_url: str,
+    ) -> None:
+        if session.conversation_policy != "regular":
+            return
+
+        try:
+            self._validate_restorable_conversation_url(
+                conversation_url
+            )
+
+            session.conversation_url = conversation_url
+
+            self._session_store.upsert(
+                PersistedSession(
+                    session_id=session.session_id,
+                    model=session.model,
+                    level=session.level,
+                    conversation_policy=(
+                        session.conversation_policy
+                    ),
+                    conversation_url=conversation_url,
+                )
+            )
+
+        except Exception as exc:
+            logger.error(
+                "browser_session_persist_failed "
+                "session_id=%s error_type=%s",
+                session.session_id,
+                type(exc).__name__,
+            )
+
     async def _complete_pinned_session(
         self,
         session: _BrowserSession,
@@ -1629,6 +1668,11 @@ class BrowserBackend(Backend):
                 "browser_session_conversation_url "
                 "session_id=%s url=%s",
                 session.session_id,
+                page_url,
+            )
+
+            self._persist_regular_session_url(
+                session,
                 page_url,
             )
 
