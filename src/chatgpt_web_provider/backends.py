@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .browser_prompts import (
     TOOL_CATALOG_SYSTEM_PREFIX,
@@ -724,6 +725,25 @@ class BrowserBackend(Backend):
 
         # Serialize only within this conversation.
         async with session.lock:
+            if (
+                session.state == "dormant"
+                and session.page is None
+            ):
+                session.state = "restoring"
+
+                try:
+                    session.page = (
+                        await self._restore_pinned_session_page(
+                            session
+                        )
+                    )
+                    session.state = "ready"
+
+                except Exception:
+                    session.page = None
+                    session.state = "dormant"
+                    raise
+
             if session.state != "ready" or session.page is None:
                 raise RuntimeError(
                     f"browser session is not ready: {session_id}"
@@ -1172,6 +1192,94 @@ class BrowserBackend(Backend):
             state="visible",
             timeout=ready_timeout_ms,
         )
+
+    def _validate_restorable_conversation_url(
+        self,
+        conversation_url: str,
+    ) -> None:
+        parsed = urlsplit(conversation_url)
+        expected = urlsplit(
+            self.settings.chatgpt_origin
+        )
+
+        parts = [
+            part
+            for part in parsed.path.split("/")
+            if part
+        ]
+
+        if (
+            parsed.scheme != expected.scheme
+            or parsed.netloc != expected.netloc
+            or len(parts) != 2
+            or parts[0] != "c"
+            or not parts[1]
+        ):
+            raise ValueError(
+                "persisted conversation URL is not "
+                "a ChatGPT conversation URL"
+            )
+
+    async def _restore_pinned_session_page(
+        self,
+        session: _BrowserSession,
+    ):
+        conversation_url = session.conversation_url
+
+        if not conversation_url:
+            raise RuntimeError(
+                "dormant browser session has no "
+                "conversation URL"
+            )
+
+        self._validate_restorable_conversation_url(
+            conversation_url
+        )
+
+        await self._ensure_page()
+
+        if self._context is None:
+            raise ChatGPTBrowserStateError(
+                phase="session_restore",
+                operation="browser_context_available",
+            )
+
+        page = await self._context.new_page()
+
+        try:
+            await page.goto(
+                conversation_url,
+                wait_until="domcontentloaded",
+                timeout=(
+                    self.settings.navigation_timeout_ms
+                ),
+            )
+
+            await self._raise_if_browser_login_required(
+                page,
+                phase="session_restore",
+            )
+
+            await self._apply_preferences(
+                page,
+                session.model,
+                session.level,
+            )
+
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+            return page
+
+        except Exception:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+            raise
 
     async def _create_pinned_session_page(
         self,
