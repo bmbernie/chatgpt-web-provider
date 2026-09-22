@@ -54,6 +54,7 @@ from .chatgpt_ui import (
     aria_label_button,
 )
 from .models import ChatMessage, CompletionResult
+from .session_store import SessionStore
 from .tool_bridge import (
     parse_tool_calls,
     render_tool_catalog,
@@ -154,6 +155,7 @@ class _BrowserSession:
     conversation_policy: str = "regular"
     page: Any | None = None
     state: str = "initializing"
+    conversation_url: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # Logical OpenAI-side conversation represented by this browser
@@ -351,6 +353,11 @@ class BrowserBackend(Backend):
         # Protect session registry mutations only.
         self._sessions_lock = asyncio.Lock()
         self._sessions: dict[str, _BrowserSession] = {}
+
+        self._session_store = SessionStore(
+            Path(self.settings.profile_dir).parent
+            / "sessions.json"
+        )
 
         self._playwright = None
         self._context = None
@@ -568,6 +575,31 @@ class BrowserBackend(Backend):
             )
 
             return self._page
+
+    async def _load_persisted_sessions(
+        self,
+        store: SessionStore | None = None,
+    ) -> None:
+        source = store or self._session_store
+        persisted = source.load()
+
+        async with self._sessions_lock:
+            for record in persisted.values():
+                if record.conversation_policy != "regular":
+                    continue
+
+                if record.session_id in self._sessions:
+                    continue
+
+                self._sessions[record.session_id] = _BrowserSession(
+                    session_id=record.session_id,
+                    model=record.model,
+                    level=record.level,
+                    conversation_policy=record.conversation_policy,
+                    page=None,
+                    state="dormant",
+                    conversation_url=record.conversation_url,
+                )
 
     @staticmethod
     def _public_session(session: _BrowserSession) -> dict:
