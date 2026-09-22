@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import socket
 import time
 import uuid
 from typing import Optional
@@ -32,6 +34,51 @@ from .security import redact_secret
 
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def _systemd_notify(
+    message: str,
+) -> None:
+    notify_socket = os.environ.get(
+        "NOTIFY_SOCKET"
+    )
+
+    if not notify_socket:
+        return
+
+    address = (
+        "\0" + notify_socket[1:]
+        if notify_socket.startswith("@")
+        else notify_socket
+    )
+
+    with socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_DGRAM,
+    ) as notifier:
+        notifier.sendto(
+            message.encode("utf-8"),
+            address,
+        )
+
+
+class SystemdReadyServer(
+    uvicorn.Server
+):
+    async def startup(
+        self,
+        sockets=None,
+    ) -> None:
+        await super().startup(
+            sockets=sockets
+        )
+
+        # Uvicorn sets started only after application
+        # startup completes and the HTTP listener is bound.
+        if self.started:
+            _systemd_notify(
+                "READY=1"
+            )
 
 
 def _require_auth(settings: Settings):
@@ -988,7 +1035,21 @@ def _responses_input_to_messages(value: str | list | dict) -> list[ChatMessage]:
 def main() -> None:
     settings = Settings.from_env()
     settings.validate_for_runtime()
-    uvicorn.run("chatgpt_web_provider.app:create_app", factory=True, host=settings.host, port=settings.port)
+
+    app = create_app(settings)
+
+    config = uvicorn.Config(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level="info",
+    )
+
+    server = SystemdReadyServer(
+        config
+    )
+
+    server.run()
 
 
 if __name__ == "__main__":
