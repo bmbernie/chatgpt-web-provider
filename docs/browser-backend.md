@@ -2,8 +2,22 @@
 
 ## Browser backend setup
 
-The browser backend uses a dedicated persistent Chromium profile. Do not reuse
+The browser backend uses a dedicated persistent browser profile. Do not reuse
 your normal browser profile.
+
+With `CHATGPT_WEB_BROWSER_CHANNEL` unset, install the Playwright-managed Chromium browser before first use:
+
+```bash
+playwright install chromium
+```
+
+To use an installed Google Chrome instead, set:
+
+```bash
+CHATGPT_WEB_BROWSER_CHANNEL=chrome
+```
+
+Use the same browser channel for profile setup and normal service operation.
 
 Environment:
 
