@@ -1713,7 +1713,7 @@ def test_browser_health_does_not_expose_exception_text():
     class HealthBackend(BrowserBackend):
         async def _ensure_page(self):
             raise RuntimeError(
-                "profile=/home/b/private "
+                "profile=/home/example/private "
                 "token=secret-value"
             )
 
@@ -1730,7 +1730,7 @@ def test_browser_health_does_not_expose_exception_text():
 
         rendered = str(result)
 
-        assert "/home/b/private" not in rendered
+        assert "/home/example/private" not in rendered
         assert "secret-value" not in rendered
 
     asyncio.run(run())

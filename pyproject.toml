@@ -5,7 +5,6 @@ description = "OpenAI-compatible local API facade backed by a browser-controlled
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Michael Guber" }]
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",

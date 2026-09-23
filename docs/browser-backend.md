@@ -66,8 +66,7 @@ export XAUTHORITY=$HOME/.Xauthority
 CHATGPT_WEB_HEADLESS=false
 ```
 
-The development deployment uses this pattern because headless mode reached
-Cloudflare but headed mode reached normal ChatGPT and produced real responses.
+Use headed mode when the site does not operate correctly in headless mode.
 
 ### Browser backend health
 

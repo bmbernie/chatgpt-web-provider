@@ -1,15 +1,7 @@
 # Deployment
 
-## Deployment notes from the development host
+A typical deployment keeps the provider bound to `127.0.0.1:8791` and exposes it remotely only through an authenticated reverse proxy, tunnel, or private network.
 
-The development deployment used:
+Use a dedicated ChatGPT browser profile. Headed browser operation may also require the appropriate desktop-session environment, such as `DISPLAY` and `XAUTHORITY` on Linux/X11.
 
-- app bound to `127.0.0.1:8791`
-- Cloudflare Tunnel for `codex.guber.dev`
-- API auth at the app layer
-- dedicated ChatGPT profile under `~/.local/share/chatgpt-web-provider/chrome-profile`
-- headed browser worker with `DISPLAY=:0` and `XAUTHORITY=$HOME/.Xauthority`
-- cron/user launch scripts to keep app and tunnel running
-
-These are operational notes, not requirements. You can run the same API behind
-Caddy, nginx, Cloudflare Tunnel, Tailscale, or localhost only.
+The provider can also remain localhost-only.

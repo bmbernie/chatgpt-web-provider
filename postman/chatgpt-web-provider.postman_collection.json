@@ -1,14 +1,14 @@
 {
   "info": {
     "_postman_id": "cf514953-5973-4d95-bbbd-56a48e5246f7",
-    "name": "ChatGPT Web Provider / codex.guber.dev",
+    "name": "ChatGPT Web Provider / codex.example.com",
     "description": "OpenAI-compatible API facade for chatgpt-web-provider. Import this collection with the template/local environment. Public files do not contain live secrets.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "https://codex.guber.dev",
+      "value": "https://codex.example.com",
       "type": "string"
     },
     {

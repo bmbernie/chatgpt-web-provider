@@ -8,16 +8,16 @@ Local development:
 http://127.0.0.1:8791
 ```
 
-Example hosted deployment used during development:
+Example hosted endpoint:
 
 ```text
-https://codex.guber.dev
+https://codex.example.com
 ```
 
 OpenAI-compatible base URL for clients that ask for one:
 
 ```text
-https://codex.guber.dev/v1
+https://codex.example.com/v1
 ```
 
 ## Chat Completions API
@@ -31,7 +31,7 @@ POST /v1/chat/completions
 Non-streaming request:
 
 ```bash
-curl --location 'https://codex.guber.dev/v1/chat/completions' \
+curl --location 'https://codex.example.com/v1/chat/completions' \
   --header 'Content-Type: application/json' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
@@ -80,7 +80,7 @@ browser backend unless token accounting is added separately.
 Set `stream: true`:
 
 ```bash
-curl --no-buffer --location 'https://codex.guber.dev/v1/chat/completions' \
+curl --no-buffer --location 'https://codex.example.com/v1/chat/completions' \
   --header 'Content-Type: application/json' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
@@ -116,7 +116,7 @@ POST /v1/responses
 Example:
 
 ```bash
-curl --location 'https://codex.guber.dev/v1/responses' \
+curl --location 'https://codex.example.com/v1/responses' \
   --header 'Content-Type: application/json' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
@@ -212,7 +212,7 @@ X-New-Session: true
 Full curl with body flag:
 
 ```bash
-curl --location 'https://codex.guber.dev/v1/chat/completions' \
+curl --location 'https://codex.example.com/v1/chat/completions' \
   --header 'Content-Type: application/json' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
@@ -227,7 +227,7 @@ curl --location 'https://codex.guber.dev/v1/chat/completions' \
 Full curl with header:
 
 ```bash
-curl --location 'https://codex.guber.dev/v1/chat/completions' \
+curl --location 'https://codex.example.com/v1/chat/completions' \
   --header 'Content-Type: application/json' \
   --header 'User-Agent: PostmanRuntime/7.45.0' \
   --header "Authorization: Bearer $CHATGPT_WEB_API_KEY" \

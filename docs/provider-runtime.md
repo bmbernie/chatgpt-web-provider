@@ -8,7 +8,7 @@
 curl -s \
   -H "Authorization: Bearer $CHATGPT_WEB_API_KEY" \
   -H 'User-Agent: PostmanRuntime/7.45.0' \
-  https://codex.guber.dev/v1/provider/status
+  https://codex.example.com/v1/provider/status
 ```
 
 Example shape:

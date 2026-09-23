@@ -12,7 +12,7 @@ from chatgpt_web_provider.models import ChatMessage, CompletionResult
 
 @pytest.fixture()
 def client():
-    app = create_app(Settings(api_keys=["test-token"], backend="mock", public_base_url="https://codex.guber.dev"))
+    app = create_app(Settings(api_keys=["test-token"], backend="mock", public_base_url="https://codex.example.com"))
     return TestClient(app)
 
 
