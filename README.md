@@ -26,7 +26,7 @@ flowchart TD
 
     CODEX[Codex]
     WEB[Web]
-    AGENT[Model / Agent]
+    MODEL[Model]
 
     U --> CLI
     CLI --> ORCH
@@ -38,10 +38,10 @@ flowchart TD
     ROUTE --> CODEX
     ROUTE --> WEB
 
-    CODEX --> AGENT
-    WEB --> AGENT
+    CODEX --> MODEL
+    WEB --> MODEL
 
-    AGENT --> ROUTE
+    MODEL --> ROUTE
     ROUTE --> ORCH
     ORCH --> CLI
     CLI --> U
